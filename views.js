@@ -1,861 +1,555 @@
 /* =====================================================================
-   Sports Intelligence Terminal - views.js
-   Page views (pure functions returning HTML) and their actions.
-   Each view reads from SIT.appState (SIT.App.S), SIT.Data and
-   SIT.Engine. Actions are registered with SIT.App.on(name, fn) and
-   triggered by data-act / data-input / data-change attributes.
+   SIT - views.js
+   Сторінки: Головна, Матчі, Матч, Можливості, Наживо, AI-аналітик,
+   Новини, Особистий кабінет. Кожна сторінка повертає HTML.
    ===================================================================== */
 (function () {
   'use strict';
-  const SIT = window.SIT, D = SIT.Data, E = SIT.Engine, U = SIT.util, A = SIT.App;
+  const SIT = window.SIT, D = SIT.Data, M = SIT.Model, U = SIT.U, A = SIT.App;
   const S = A.S;
-  const { esc, money, pct, pp, signed, odds, time, dayLabel, dateTime, ago, plClass, round2, icon, todayStr, sportTag, demoTag, confTag, confTagRaw, riskTag, impactTag, valTag, statusTag, scoreHtml, empty, kpi, dd, datePicker, openModal, closeModal, toast, chart, spark, momentumBar, donut, hbars, stats, groupStats, ODDS_BUCKETS, oddsBucket, rangeFilter, bankroll, render, save, on } = A;
-  const V = {};
-  const now = () => SIT.clock.now();
-  const enc = encodeURIComponent;
-  const mlink = (m) => '#/match/' + enc(m.id);
-  const DAY = 864e5;
-  const avg = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
-  const fmtD = (ts) => new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short' }).format(ts);
-  const rerender = () => render({ keepScroll: true });
+  const { esc, money, num, pct, pp, odds, time, dayLabel, dateTime, ago, plural, plCls, initials, icon, sportIc, confB, riskB, impB, valB, resB, demoB, statusLine,
+    empty, note, tile, plSpan, chips, select, sw, RES, lineChart, hbars, momBars, openModal, closeModal, toast, on, onInput, onChange, rerender, render, save, now } = A;
+  const V = SIT.Views;
+  const H = 3600e3;
 
-  /* ---------------- layout helpers ---------------- */
-  function panel(title, body, o) {
-    o = o || {};
-    return '<section class="panel ' + (o.cls || '') + '"' + (o.id ? ' id="' + o.id + '"' : '') + '>' +
-      (title != null ? '<header class="ph"><h2>' + title + '</h2>' + (o.right ? '<div class="ph-r">' + o.right + '</div>' : '') + '</header>' : '') +
-      '<div class="pb ' + (o.flush ? 'flush' : '') + '">' + body + '</div></section>';
-  }
-  const pageHead = (title, sub, right) => '<div class="pg-h"><div><h1>' + esc(title) + '</h1>' + (sub ? '<p>' + sub + '</p>' : '') + '</div>' + (right ? '<div class="pg-r">' + right + '</div>' : '') + '</div>';
-  function tabs(act, items, cur, cls) {
-    return '<div class="tabs ' + (cls || '') + '" role="tablist">' + items.filter(Boolean).map(([v, l, n]) => '<button type="button" role="tab" aria-selected="' + (v === cur) + '" tabindex="' + (v === cur ? 0 : -1) + '" class="tab ' + (v === cur ? 'on' : '') + '" data-act="' + act + '" data-v="' + esc(v) + '">' + esc(l) + (n != null ? '<em>' + n + '</em>' : '') + '</button>').join('') + '</div>';
-  }
-  const seg = (act, items, cur) => '<div class="seg" role="group">' + items.map(([v, l]) => '<button type="button" class="' + (v === cur ? 'on' : '') + '" aria-pressed="' + (v === cur) + '" data-act="' + act + '" data-v="' + esc(v) + '">' + esc(l) + '</button>').join('') + '</div>';
-  const RANGES = [['7D', '7D'], ['30D', '30D'], ['90D', '90D'], ['ALL', 'All']];
-  const chip = (act, v, l, isOn, attrs) => '<button type="button" class="chip ' + (isOn ? 'on' : '') + '" aria-pressed="' + !!isOn + '" data-act="' + act + '" data-v="' + esc(v) + '"' + (attrs || '') + '>' + l + '</button>';
-  const toggle = (act, isOn, label, attrs) => '<button type="button" class="tg ' + (isOn ? 'on' : '') + '" role="switch" aria-checked="' + !!isOn + '" data-act="' + act + '"' + (attrs || '') + '><span class="tg-t"><i></i></span><span class="tg-l">' + label + '</span></button>';
-  const legend = (items) => '<div class="lgd">' + items.map(([l, c]) => '<span><i style="background:' + c + '"></i>' + esc(l) + '</span>').join('') + '</div>';
-  const note = (txt, kind) => '<div class="note ' + (kind || '') + '">' + icon(kind === 'warn' ? 'alert' : 'info') + '<span>' + txt + '</span></div>';
-
-  /* sortable table: cols [{k, l, f(row) html, v(row) sort value, num, cls}] */
-  function table(id, cols, rows, o) {
-    o = o || {};
-    const s = S.ui.sorts[id] || o.sort || {};
-    let list = rows.slice();
-    const col = cols.find((c) => c.k === s.col);
-    if (col && col.v) { const d = s.dir === 'asc' ? 1 : -1; list.sort((a, b) => { const x = col.v(a), y = col.v(b); return (x > y ? 1 : x < y ? -1 : 0) * d; }); }
-    if (o.limit) list = list.slice(0, o.limit);
-    const th = cols.map((c) => '<th class="' + (c.num ? 'num ' : '') + (c.cls || '') + '"' + (c.v ? ' aria-sort="' + (s.col === c.k ? (s.dir === 'asc' ? 'ascending' : 'descending') : 'none') + '"' : '') + '>' +
-      (c.v ? '<button type="button" class="th-s ' + (s.col === c.k ? 'on ' + s.dir : '') + '" data-act="sort" data-table="' + id + '" data-col="' + c.k + '">' + esc(c.l) + icon('sort', 'th-ic') + '</button>' : esc(c.l)) + '</th>').join('');
-    const body = list.length ? list.map((r) => '<tr' + (o.rowAttr ? o.rowAttr(r) : '') + '>' + cols.map((c) => '<td class="' + (c.num ? 'num ' : '') + (c.cls || '') + '">' + c.f(r) + '</td>').join('') + '</tr>').join('')
-      : '<tr><td colspan="' + cols.length + '" class="td-empty">' + esc(o.empty || 'No data for this selection.') + '</td></tr>';
-    return '<div class="tw"><table class="tbl ' + (o.cls || '') + '"><thead><tr>' + th + '</tr></thead><tbody>' + body + '</tbody></table></div>';
-  }
-
-  /* ---------------- analysis helpers ---------------- */
-  const an = (m) => E.analyzeMatch(m, now());
-  const selText = (s) => (s.mk === 'BTTS' ? 'BTTS ' + s.label : s.label);
-  const shortSel = (s) => ({ home: '1', draw: 'X', away: '2', over: 'O', under: 'U', yes: 'Y', no: 'N' }[s.key] || s.label);
-  const CAT = {
-    interesting: ['Interesting', 'Linked news or a notable price move makes this worth a look.'],
-    signal: ['Statistical signal', 'One statistical factor (form, head to head or scoring profile) is unusually strong.'],
-    discrepancy: ['Model-market discrepancy', 'Model probability is at least 3 pp above the probability implied by the odds.'],
-    confidence: ['High confidence', 'Data is complete and most factors agree (model confidence 66+).'],
-    variance: ['High variance', 'Odds of 2.80+ or a high risk score. Outcomes will swing even if the estimate is right.'],
-    live: ['Live opportunity', 'Match is in play. Prices and probabilities move quickly.']
-  };
-  function windowMatches() {
+  /* ================= спільне ================= */
+  const mLink = (m) => '#/match/' + encodeURIComponent(m.id);
+  const an = (m) => M.analyze(m, now());
+  const head = (title, sub, right) => '<div class="ph"><div class="ph-l"><h1>' + title + '</h1>' + (sub ? '<p>' + sub + '</p>' : '') + '</div>' + (right ? '<div class="ph-r">' + right + '</div>' : '') + '</div>';
+  const sec = (title, body, right, cls) => '<section class="sec ' + (cls || '') + '">' + (title ? '<div class="sec-h"><h2>' + title + '</h2>' + (right || '') + '</div>' : '') + body + '</section>';
+  const more = (href, t) => '<a class="lnk" href="' + href + '">' + t + icon('chevR') + '</a>';
+  const sportOpts = () => [['all', 'Усі']].concat(Object.values(D.SPORTS).map((s) => [s.id, s.name]));
+  const isFav = (m) => S.fav.includes(m.home) || S.fav.includes(m.away);
+  function pool(hours) {
     const t = now();
-    return D.matchesInRange(U.addDays(todayStr(), -1), 3).filter((m) => A.prefSport(m)).filter((m) => { const st = D.status(m, t); return st === 'live' || (st === 'upcoming' && m.start - t < 36 * 3600e3); });
+    return D.matchesInRange(U.addDays(U.ds(t), -1), 3).filter((m) => D.status(m, t) !== 'finished' && m.start - t < hours * H && A.prefSport(m)).map(an);
   }
-  function opportunities() { return windowMatches().map((m) => ({ m, a: an(m) })).filter((x) => x.a.best && x.a.best.value > 0); }
-  function shortEx(s) {
-    const f = s.positives[0];
-    return f ? f.label + ' ' + signed(f.value, 0) + ': ' + f.detail : 'No single factor dominates. The estimate stays close to the market price.';
+  const CATS = { edge: 'Розбіжність з ринком', confident: 'Висока впевненість', signal: 'Сильний сигнал', risky: 'Ризиковані', live: 'Наживо' };
+  function shortWhy(s) {
+    const p = s.pos.slice(0, 2).map((x) => x.label.toLowerCase()).join(' і ');
+    return (p ? 'На користь: ' + p + '.' : 'Помітних факторів немає, оцінка близька до ринку.') + (s.risk.list[0] ? ' Головний ризик: ' + s.risk.list[0].label.toLowerCase() + '.' : '');
   }
-  function oppCard(x, o) {
-    o = o || {}; const m = x.m, a = x.a, s = a.best;
+  function whyList(a) {
+    const s = a.best, m = a.m, out = [];
+    a.cats.forEach((c) => {
+      if (c === 'edge') out.push(['Розбіжність з ринком', 'Модель дає ' + pct(s.model) + ', а коефіцієнт ' + odds(s.odds) + ' означає ' + pct(s.implied) + ' (' + pp(s.value) + ').']);
+      if (c === 'confident') out.push(['Висока впевненість', 'Впевненість ' + s.conf.value + ' зі 100: дані повні на ' + Math.round(s.conf.completeness * 100) + '%, фактори узгоджені на ' + Math.round(s.conf.agreement * 100) + '%.']);
+      if (c === 'signal') s.factors.filter((x) => x.value >= 5).forEach((x) => out.push(['Сильний сигнал', x.label + ' (+' + x.value + '): ' + x.detail]));
+      if (c === 'risky') out.push(['Ризикована', s.odds >= 2.8 ? 'Коефіцієнт ' + odds(s.odds) + ': навіть при правильній оцінці частіше програє.' : 'Ризики: ' + s.risk.list.map((r) => r.label.toLowerCase()).join(', ') + '.']);
+      if (c === 'live') { const l = D.live(m); out.push(['Наживо', 'Матч іде: ' + l.label + (l.h != null ? ', рахунок ' + l.h + ':' + l.a : '') + '.']); }
+    });
+    const n = D.newsForMatch(m).find((x) => x.impact !== 'low'); if (n) out.push(['Новини', n.title]);
+    if (!out.length) out.push(['Рейтинг', 'Матч потрапив у список за загальною оцінкою цікавості ' + a.interest + ' зі 100.']);
+    return out;
+  }
+  const probBars = (model, implied) => '<div class="pb"><div class="pb-r"><span>Модель</span><span class="pb-t"><i class="pb-m" style="width:' + (model * 100).toFixed(1) + '%"></i></span><b>' + pct(model) + '</b></div><div class="pb-r"><span>Ринок</span><span class="pb-t"><i class="pb-i" style="width:' + (implied * 100).toFixed(1) + '%"></i></span><b>' + pct(implied) + '</b></div></div>';
+  function factorRows(fs) {
+    return '<div class="fx">' + fs.map((x) => '<div class="fx-r' + (x.missing ? ' miss' : '') + '"><span class="fx-l">' + esc(x.label) + '</span><span class="fx-b"><i class="' + (x.value >= 0 ? 'pos' : 'neg') + '" style="width:' + Math.min(50, Math.abs(x.value) / 8 * 50) + '%;' + (x.value >= 0 ? 'left:50%' : 'right:50%') + '"></i></span><span class="fx-v ' + (x.missing ? 'muted' : plCls(x.value)) + '">' + (x.missing ? 'н/д' : (x.value > 0 ? '+' : '') + x.value) + '</span><span class="fx-d">' + esc(x.detail) + '</span></div>').join('') + '</div>';
+  }
+  const meta = (m) => sportIc(m.sport) + '<span>' + esc(m.tourName) + '</span>';
+  function oppCard(a) {
+    const s = a.best, m = a.m, l = D.live(m);
     return '<article class="opp">' +
-      '<a class="opp-main" href="' + mlink(m) + '">' +
-      '<div class="opp-top">' + sportTag(m.sport) + '<span class="opp-lg">' + esc(m.league) + '</span>' + statusTag(m) + '</div>' +
-      '<div class="opp-teams"><span><b>' + esc(m.home) + '</b><b>' + esc(m.away) + '</b></span>' + scoreHtml(m) + '</div>' +
-      '<div class="opp-pick"><span class="opp-mk">' + esc(s.mkName) + '</span><span class="opp-sel">' + esc(selText(s)) + '</span><span class="opp-odds">' + odds(s.odds) + '</span></div>' +
-      '<div class="opp-nums"><span><i>Model</i>' + pct(s.model) + '</span><span><i>Implied</i>' + pct(s.implied) + '</span><span><i>Value</i>' + valTag(s.value) + '</span><span><i>Conf.</i>' + confTag(s.conf) + '</span></div>' +
-      '<p class="opp-ex">' + esc(shortEx(s)) + '</p></a>' +
-      '<div class="opp-cats">' + a.categories.map((c) => '<span class="cat cat-' + c + '">' + CAT[c][0] + '</span>').join('') + riskTag(s.risk.level) + '</div>' +
-      (o.why ? '<details class="why"><summary>Why this appeared</summary><ul>' + a.categories.map((c) => '<li><b>' + CAT[c][0] + '.</b> ' + esc(CAT[c][1]) + '</li>').join('') +
-        '<li><b>Numbers.</b> Model ' + pct(s.model) + ' vs implied ' + pct(s.implied) + ', difference ' + pp(s.value) + ', expected value ' + signed(s.ev * 100) + '% per unit (internal estimate).</li></ul></details>' : '') +
-      '</article>';
+      '<div class="opp-top">' + meta(m) + '<span class="opp-t">' + (l.status === 'live' ? statusLine(m) : dateTime(m.start)) + '</span></div>' +
+      '<a class="opp-m" href="' + mLink(m) + '"><span>' + esc(m.home) + '</span><span class="vs">проти</span><span>' + esc(m.away) + '</span>' + (l.h != null ? '<b class="opp-sc">' + l.h + ':' + l.a + '</b>' : '') + '</a>' +
+      '<div class="pick"><div><small>' + esc(s.mkName) + '</small><b>' + esc(s.label) + '</b></div><span class="pick-o" title="Поточний коефіцієнт (демо)">' + odds(s.odds) + '</span></div>' +
+      probBars(s.model, s.implied) +
+      '<div class="badges">' + valB(s.value) + confB(s.conf) + riskB(s.risk.level) + '</div>' +
+      '<p class="opp-x">' + esc(shortWhy(s)) + '</p>' +
+      '<details class="why"><summary>Чому це з’явилося</summary><ul>' + whyList(a).map(([k, v]) => '<li><b>' + esc(k) + '.</b> ' + esc(v) + '</li>').join('') + '</ul>' + factorRows(s.factors) + '</details>' +
+      '<a class="btn ghost full" href="' + mLink(m) + '">Детальний аналіз</a></article>';
   }
-  function matchRow(m, o) {
-    o = o || {};
-    const t = now(); const st = D.status(m, t); const mk = D.markets(m, t)[0];
-    const b = st !== 'finished' && !o.noAn ? an(m).best : null;
-    return '<a class="mr ' + (st === 'live' ? 'is-live' : '') + '" href="' + mlink(m) + '">' +
-      '<span class="mr-st">' + statusTag(m) + '</span><span class="mr-sp">' + sportTag(m.sport) + '</span>' +
-      '<span class="mr-t"><span>' + esc(m.home) + '</span><span>' + esc(m.away) + '</span>' + (o.league ? '<small>' + esc(m.league) + '</small>' : '') + '</span>' +
-      '<span class="mr-sc">' + scoreHtml(m) + '</span>' +
-      '<span class="mr-o">' + mk.sels.map((s) => '<span><i>' + shortSel(s) + '</i>' + odds(s.odds) + '</span>').join('') + '</span>' +
-      '<span class="mr-v">' + (b ? (b.value > 0 ? valTag(b.value) : '<span class="dim" data-tip="No positive model-market difference">-</span>') + confTag(b.conf) : '') + '</span></a>';
+  function oppRow(a) {
+    const s = a.best, m = a.m;
+    return '<a class="orow" href="' + mLink(m) + '"><span class="orow-m"><small>' + sportIc(m.sport) + esc(m.tourName) + ', ' + dateTime(m.start) + '</small><b>' + esc(m.home) + ' проти ' + esc(m.away) + '</b></span><span class="orow-p"><small>' + esc(s.mkName) + '</small><b>' + esc(s.label) + '</b></span><span class="orow-o">' + odds(s.odds) + '</span>' + valB(s.value) + '</a>';
   }
-  function newsCard(n, o) {
-    o = o || {};
-    const ms = n.matchIds.map((id) => D.match(id)).filter(Boolean);
-    const isInsuff = /^Insufficient data/.test(n.why);
-    return '<article class="news ' + (o.compact ? 'compact' : '') + '">' +
-      '<div class="nw-top">' + (n.sport ? sportTag(n.sport) : '') + impactTag(n.impact) + '<span class="nw-src">' + esc(n.source) + '</span><time>' + ago(n.time) + '</time>' + demoTag() + '</div>' +
-      '<h3>' + esc(n.headline) + '</h3>' +
-      '<div class="nw-ent">' + esc(n.team || '') + (n.entity && n.entity !== n.team ? ' · ' + esc(n.entity) : '') + (n.league ? ' · ' + esc(n.league) : '') + '</div>' +
-      (o.compact ? '' : '<div class="nw-fact"><span class="lbl">Fact</span><p>' + esc(n.fact) + '</p></div>') +
-      '<div class="nw-why ' + (isInsuff ? 'insuff' : '') + '"><span class="lbl">Why it matters <em>AI interpretation</em></span><p>' + esc(n.why) + '</p>' +
-      (!o.compact && n.basis && n.basis.length ? '<ul>' + n.basis.map((x) => '<li>' + esc(x) + '</li>').join('') + '</ul>' : '') + '</div>' +
-      (ms.length ? '<div class="nw-ms"><span class="lbl">Impacted</span>' + ms.map((m) => '<a href="' + mlink(m) + '">' + esc(m.home) + ' vs ' + esc(m.away) + ' <small>' + dateTime(m.start) + '</small></a>').join('') + '</div>' : '') +
-      '</article>';
+  function matchRow(m, withSignal) {
+    const l = D.live(m); const a = withSignal ? an(m) : null; const s = a && a.best;
+    const win = l.status === 'finished' ? (l.h > l.a ? 'h' : l.h < l.a ? 'a' : '') : '';
+    return '<a class="mrow ' + l.status + '" href="' + mLink(m) + '"><span class="mrow-t">' + statusLine(m) + '</span>' +
+      '<span class="mrow-n"><span class="' + (win === 'h' ? 'w' : '') + '">' + esc(m.home) + (S.fav.includes(m.home) ? icon('star', 'fav-ic') : '') + '</span><span class="' + (win === 'a' ? 'w' : '') + '">' + esc(m.away) + (S.fav.includes(m.away) ? icon('star', 'fav-ic') : '') + '</span></span>' +
+      '<span class="mrow-s' + (l.status === 'live' ? ' lv' : '') + '">' + (l.h != null ? '<b>' + l.h + '</b><b>' + l.a + '</b>' : '') + '</span>' +
+      (s ? '<span class="mrow-g"><small>' + esc(s.mkName) + '</small><b>' + esc(s.label) + ' <em>' + odds(s.odds) + '</em></b></span><span class="mrow-v">' + valB(s.value) + '</span>' : '') + '</a>';
   }
-  const resTag = (b) => '<span class="res res-' + b.status + '">' + ({ pending: 'Pending', won: 'Won', lost: 'Lost', void: 'Void' }[b.status] || b.status) + '</span>';
-  const plCell = (b) => (b.status === 'pending' ? '<span class="dim">' + money(b.potential, true) + ' pot.</span>' : '<b class="' + plClass(b.pl) + '">' + money(b.pl, true) + '</b>');
 
-  /* ---------------- DASHBOARD ---------------- */
-  let marketScan = null;
-  const SCAN_STEPS = ['Scanning matches…', 'Analyzing form…', 'Checking news…', 'Comparing market…', 'Calculating model…'];
-  function plSince(bets, from) { return bets.filter((b) => b.status !== 'pending' && (b.settledAt || 0) >= from).reduce((a, b) => a + b.pl, 0); }
+  /* ================= ГОЛОВНА ================= */
+  let scanRes = null;
   function scanBox() {
-    if (!marketScan) {
-      return '<div class="scan-intro"><p>Runs the model over every upcoming and live match in the next 36 hours for your preferred sports, checks linked news and compares model probabilities with the market. It surfaces things worth reading, not bets to place.</p>' +
-        '<button type="button" class="btn btn-sig btn-lg" data-act="scan-market">' + icon('scanner') + 'Scan the market</button></div>';
-    }
-    const list = marketScan.ids.map((id) => D.match(id)).filter(Boolean).map((m) => ({ m, a: an(m) })).filter((x) => x.a.best);
-    return '<div class="scan-res"><div class="scan-n"><b>' + marketScan.ids.length + '</b> opportunities found</div>' +
-      '<div class="scan-meta">' + marketScan.scanned + ' matches scanned ' + ago(marketScan.at) + '. Thresholds: difference 2+ pp, confidence 50+. Statistical estimates, not predictions.</div>' +
-      (list.length ? '<div class="scan-list">' + list.slice(0, 5).map((x) => '<a class="scan-i" href="' + mlink(x.m) + '">' + sportTag(x.m.sport) + '<span class="si-t"><b>' + esc(x.m.home) + ' vs ' + esc(x.m.away) + '</b><small>' + esc(selText(x.a.best)) + ' @ ' + odds(x.a.best.odds) + ' · ' + esc(x.m.league) + '</small></span>' + valTag(x.a.best.value) + confTag(x.a.best.conf) + '</a>').join('') + '</div>' : '<p class="dim">Nothing passed the thresholds. That is a normal outcome.</p>') +
-      '<div class="scan-act"><button type="button" class="btn" data-act="scan-market">' + icon('refresh') + 'Scan again</button><a class="btn btn-ghost" href="#/opportunities">All opportunities' + icon('chevR') + '</a></div></div>';
+    if (!scanRes) return '<div class="scan-idle"><div><h2>Знайти цікаве</h2><p>Модель перегляне всі матчі найближчих 36 годин: форму, очні зустрічі, склади, новини та коефіцієнти. Покаже лише ті, де її оцінка помітно відрізняється від ринку.</p></div><button type="button" class="btn primary lg" data-act="scan">Сканувати матчі</button></div>';
+    const list = scanRes.ids.map((id) => D.match(id)).filter(Boolean).map(an);
+    return '<div class="scan-done"><div class="scan-sum"><h2>' + (list.length ? 'Знайдено ' + list.length + ' ' + plural(list.length, ['можливість', 'можливості', 'можливостей']) : 'Нічого не знайдено') + '</h2><p>Переглянуто ' + scanRes.n + ' ' + plural(scanRes.n, ['матч', 'матчі', 'матчів']) + ' ' + ago(scanRes.t) + '. Пороги: різниця від 3 п.п., впевненість від 50.</p><button type="button" class="btn ghost" data-act="scan">' + icon('refresh') + 'Ще раз</button></div>' +
+      (list.length ? '<div class="opp-grid">' + list.map(oppCard).join('') + '</div>' : '<p class="muted">Модель і ринок зараз згодні щодо всіх матчів. Це теж нормальний результат.</p>') + '</div>';
   }
-  on('scan-market', () => {
-    const box = document.getElementById('scan-box'); if (!box || A.renderMeta.busy) return;
-    A.renderMeta.busy = true;
-    const reduce = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
-    const ms = windowMatches(); const t = now();
-    const res = ms.map((m) => ({ m, a: an(m) })).filter((x) => x.a.best && x.a.best.value >= 0.02 && x.a.best.conf.value >= 50).sort((x, y) => y.a.interest - x.a.interest);
-    const newsN = ms.reduce((a, m) => a + D.newsForMatch(m, t).length, 0);
-    const details = [ms.length + ' matches in window', 'last 10 results per side', newsN + ' linked news items', 'odds from demo feed', res.length + ' passed thresholds'];
-    box.innerHTML = '<ol class="scan-steps">' + SCAN_STEPS.map((s) => '<li><span class="ss-ic"></span><span>' + s + '</span><em></em></li>').join('') + '</ol><div class="bar"><i id="scan-bar"></i></div>';
-    let i = 0;
+  on('scan', () => {
+    const box = document.getElementById('scan'); if (!box) return;
+    A.rendering.busy = true;
+    const steps = ['Переглядаємо матчі', 'Аналізуємо форму', 'Перевіряємо новини і склади', 'Порівнюємо з ринком', 'Рахуємо модель'];
+    box.innerHTML = '<div class="scan-run" aria-live="polite"><div class="radar" aria-hidden="true"><i></i></div><ol class="steps">' + steps.map((x) => '<li><span></span>' + x + '</li>').join('') + '</ol></div>';
+    const lis = box.querySelectorAll('.steps li'); let i = 0;
     const step = () => {
-      if (!document.body.contains(box)) { finish(); return; }
-      const li = box.querySelectorAll('li');
-      if (i > 0) { li[i - 1].classList.remove('run'); li[i - 1].classList.add('done'); li[i - 1].querySelector('em').textContent = details[i - 1]; }
-      const bar = document.getElementById('scan-bar'); if (bar) bar.style.width = Math.round((i / li.length) * 100) + '%';
-      if (i < li.length) { li[i].classList.add('run'); i++; setTimeout(step, reduce ? 80 : 560); }
-      else setTimeout(finish, reduce ? 50 : 350);
-    };
-    const finish = () => {
-      marketScan = { at: now(), ids: res.map((x) => x.m.id), scanned: ms.length };
-      A.renderMeta.busy = false;
-      if (document.body.contains(box)) { box.innerHTML = scanBox(); const n = box.querySelector('.scan-n'); if (n) n.classList.add('pop'); }
+      if (i > 0) { lis[i - 1].classList.remove('run'); lis[i - 1].classList.add('ok'); }
+      if (i < lis.length) { lis[i].classList.add('run'); i++; setTimeout(step, 480); return; }
+      const p = pool(36).filter((a) => a.status === 'upcoming');
+      const res = p.filter((a) => a.best.value >= 0.03 && a.best.conf.value >= 50).sort((x, y) => y.best.value * y.best.conf.value - x.best.value * x.best.conf.value).slice(0, 4);
+      scanRes = { t: now(), n: p.length, ids: res.map((a) => a.m.id) };
+      A.rendering.busy = false; box.innerHTML = scanBox();
     };
     step();
   });
 
-  V.dashboard = () => {
-    const t = now(), td = todayStr(); const dayStart = U.parseDate(td).getTime();
-    const ub = bankroll('user'), us = stats(S.bets.user, S.user.startingBankroll);
-    const ab = bankroll('ai'), as = stats(S.bets.ai, S.ai.startingBankroll);
-    const ubP = S.bets.user.filter((b) => b.status === 'pending');
-    const aiToday = S.bets.ai.filter((b) => U.dateStr(b.placedAt) === td);
-    const port = '<div class="bal"><div class="bal-v">' + money(ub) + '</div><div class="bal-s">Balance · start ' + money(S.user.startingBankroll) + ' · <span class="' + plClass(ub - S.user.startingBankroll) + '">' + money(ub - S.user.startingBankroll, true) + '</span></div></div>' +
-      '<div class="kg k5">' + kpi('Today', money(plSince(S.bets.user, dayStart), true), '', plClass(plSince(S.bets.user, dayStart))) +
-      kpi('This week', money(plSince(S.bets.user, t - 7 * DAY), true), '', plClass(plSince(S.bets.user, t - 7 * DAY))) +
-      kpi('This month', money(plSince(S.bets.user, t - 30 * DAY), true), '', plClass(plSince(S.bets.user, t - 30 * DAY))) +
-      kpi('ROI', pct(us.roi), us.decided + ' settled', plClass(us.roi || 0)) +
-      kpi('Active bets', String(ubP.length), money(ubP.reduce((a, b) => a + b.stake, 0)) + ' staked') + '</div>';
-    const aiSeries = as.series.slice(-60).map((p) => p.bank);
-    const aiP = '<div class="bal"><div class="bal-v">' + money(ab) + spark(aiSeries, 120, 34, ab >= S.ai.startingBankroll ? 'var(--pos)' : 'var(--neg)') + '</div><div class="bal-s">Virtual bankroll · start ' + money(S.ai.startingBankroll) + ' · ' + E.CONFIG.profiles[S.settings.risk].label + ' profile</div></div>' +
-      '<div class="kg k5">' + kpi("Today's bets", String(aiToday.length), aiToday.filter((b) => b.status === 'pending').length + ' pending') +
-      kpi('Today P/L', money(plSince(S.bets.ai, dayStart), true), '', plClass(plSince(S.bets.ai, dayStart))) +
-      kpi('ROI', pct(as.roi), as.decided + ' settled', plClass(as.roi || 0)) +
-      kpi('Win rate', pct(as.winRate), as.wins + 'W ' + as.losses + 'L') +
-      kpi('Streak', '<span class="' + (as.streakType === 'won' ? 'pos' : as.streakType === 'lost' ? 'neg' : '') + '">' + as.streak + '</span>', 'best W' + as.maxWin) + '</div>';
-    const opps = opportunities().sort((x, y) => y.a.interest - x.a.interest).slice(0, 6);
-    const today = D.matchesInRange(U.addDays(td, -1), 3);
-    const live = today.filter((m) => D.status(m, t) === 'live');
-    const up = today.filter((m) => D.status(m, t) === 'upcoming').slice(0, 8);
-    let news = D.news(td).filter((n) => n.time <= t);
-    if (news.length < 5) news = news.concat(D.news(U.addDays(td, -1)).filter((n) => n.time <= t));
-    news = news.sort((a, b) => (b.impact === 'HIGH') - (a.impact === 'HIGH') || b.time - a.time).slice(0, 5);
-    return pageHead('Dashboard', dayLabel(t) + ', ' + new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'long' }).format(t) + ' ' + demoTag('Demo data'), '<button type="button" class="btn" data-act="ai-run">' + icon('zap') + 'Run AI scan</button>') +
-      '<div class="grid g-dash">' +
-      panel('Portfolio <small>You</small>', port, { cls: 'c6', right: '<a class="lnk" href="#/journal">Journal</a>' }) +
-      panel('AI Analyst <small>paper account</small>', aiP, { cls: 'c6', right: '<a class="lnk" href="#/ai">Performance</a>' }) +
-      panel('Find something interesting', '<div id="scan-box">' + scanBox() + '</div>', { cls: 'c5 scan-panel' }) +
-      panel("Today's opportunities", opps.length ? '<div class="opp-grid">' + opps.map((x) => oppCard(x)).join('') + '</div>' : empty('No positive model-market differences right now', 'Check back later or widen your preferred sports in Settings.'), { cls: 'c7', right: '<a class="lnk" href="#/opportunities">View all</a>' }) +
-      panel('Live now <em class="cnt">' + live.length + '</em>', live.length ? '<div class="mlist">' + live.slice(0, 7).map((m) => matchRow(m, { league: true })).join('') + '</div>' : empty('No live events', 'Nothing is in play at the current demo time.'), { cls: 'c6', right: '<a class="lnk" href="#/live">Live radar</a>', flush: true }) +
-      panel('Upcoming', up.length ? '<div class="mlist">' + up.map((m) => matchRow(m, { league: true })).join('') + '</div>' : empty('No upcoming events', 'The schedule is empty for this window.'), { cls: 'c6', right: '<a class="lnk" href="#/scanner">Scanner</a>', flush: true }) +
-      panel('Top sports news', news.length ? '<div class="news-l">' + news.map((n) => newsCard(n, { compact: true })).join('') + '</div>' : empty('No news yet', 'News items appear as the demo day progresses.'), { cls: 'c12', right: '<a class="lnk" href="#/news">All news</a>' }) +
-      '</div>';
+  V[''] = function () {
+    const t = now(); const us = A.stats(S.bets.user, S.user.start), as = A.stats(S.bets.ai, S.ai.start);
+    const today = D.matchesForDate(U.ds(t)).filter(A.prefSport);
+    const lives = D.matchesInRange(U.addDays(U.ds(t), -1), 2).filter((m) => D.status(m) === 'live' && A.prefSport(m));
+    const pend = S.bets.user.filter((b) => b.status === 'pending');
+    const dayStart = U.dayStart(U.ds(t));
+    const aiToday = S.bets.ai.filter((b) => b.status !== 'pending' && b.settledAt >= dayStart).reduce((s, b) => s + b.pl, 0);
+    const greet = new Date(t).getHours() < 12 ? 'Доброго ранку' : new Date(t).getHours() < 18 ? 'Доброго дня' : 'Доброго вечора';
+    const opps = pool(36).filter((a) => a.status === 'upcoming' && a.best.value > 0.015).sort((x, y) => y.interest - x.interest).slice(0, 4);
+    const favUp = S.fav.length ? D.matchesInRange(U.ds(t), 3).filter((m) => isFav(m) && D.status(m) !== 'finished').slice(0, 5) : [];
+    const news = D.news(t, 2).filter((n) => n.impact !== 'low').slice(0, 3);
+    return '<section class="hero"><div><h1>' + greet + (S.profile.name ? ', ' + esc(S.profile.name.split(' ')[0]) : '') + '</h1><p>' + new Date(t).toLocaleDateString('uk-UA', { weekday: 'long', day: 'numeric', month: 'long' }) + '. Сьогодні ' + today.length + ' ' + plural(today.length, ['матч', 'матчі', 'матчів']) + ', зараз наживо ' + lives.length + '.</p></div>' + demoB('Демо-дані') + '</section>' +
+      '<div class="tiles">' +
+      '<a class="tile link" href="#/me">' + '<span class="tile-l">Мій баланс</span><b class="tile-v">' + money(us.bank) + '</b><span class="tile-s ' + plCls(us.pl) + '">' + money(us.pl, true) + ' від старту</span></a>' +
+      '<a class="tile link" href="#/me/bets"><span class="tile-l">Активні ставки</span><b class="tile-v">' + pend.length + '</b><span class="tile-s">' + money(pend.reduce((s, b) => s + b.stake, 0)) + ' у грі</span></a>' +
+      '<a class="tile link" href="#/ai"><span class="tile-l">AI-аналітик</span><b class="tile-v">' + money(as.bank) + '</b><span class="tile-s">Сьогодні ' + '<span class="' + plCls(aiToday) + '">' + money(aiToday, true) + '</span></span></a>' +
+      '<a class="tile link" href="#/live"><span class="tile-l">Наживо</span><b class="tile-v">' + lives.length + '</b><span class="tile-s">' + plural(lives.length, ['матч зараз', 'матчі зараз', 'матчів зараз']) + '</span></a></div>' +
+      '<section class="scan" id="scan">' + scanBox() + '</section>' +
+      '<div class="cols">' +
+      sec('Найкращі можливості', opps.length ? '<div class="orows">' + opps.map(oppRow).join('') + '</div>' : empty('Поки нічого', 'Немає матчів, де модель помітно розходиться з ринком.'), more('#/opps', 'Усі')) +
+      sec('Наживо зараз', lives.length ? '<div class="mlist">' + lives.slice(0, 6).map((m) => matchRow(m)).join('') + '</div>' : empty('Зараз ніхто не грає', 'Перемотайте демо-час у розділі «Наживо», щоб побачити матчі в грі.'), more('#/live', 'Усі')) + '</div>' +
+      '<div class="cols">' +
+      sec('Ваше обране', favUp.length ? '<div class="mlist">' + favUp.map((m) => matchRow(m)).join('') + '</div>' : empty(S.fav.length ? 'Найближчим часом матчів немає' : 'Обраного поки немає', S.fav.length ? 'Матчі обраних команд з’являться тут.' : 'Відкрийте будь-який матч і натисніть зірочку біля команди чи гравця.'), more('#/me/fav', 'Керувати')) +
+      sec('Головні новини', news.length ? '<div class="nlist">' + news.map((n) => newsCard(n, true)).join('') + '</div>' : empty('Важливих новин немає', ''), more('#/news', 'Усі новини')) + '</div>';
   };
 
-  /* ---------------- SCANNER ---------------- */
-  const WINDOWS = [['all', 'Any time'], ['next1', 'Next 1 hour'], ['next3', 'Next 3 hours'], ['next6', 'Next 6 hours'], ['night', 'Night 00-06'], ['morning', 'Morning 06-12'], ['afternoon', 'Afternoon 12-18'], ['evening', 'Evening 18-24']];
-  function scannerBase() {
-    const f = S.ui.scanner, td = todayStr();
-    if (f.date === 'today') return D.matchesForDate(td);
-    if (f.date === 'tomorrow') return D.matchesForDate(U.addDays(td, 1));
-    if (f.date === 'all') return D.matchesInRange(td, 3);
-    return D.matchesForDate(f.date);
+  /* ================= МАТЧІ ================= */
+  function matchesBase() {
+    const t = now(); const ds = U.addDays(U.ds(t), Number(S.ui.mDay));
+    let ms = D.matchesForDate(ds);
+    const q = (S.ui.q || '').trim().toLowerCase();
+    ms = ms.filter((m) => (S.ui.mSport === 'all' || m.sport === S.ui.mSport) && (S.ui.mStatus === 'all' || D.status(m) === S.ui.mStatus) && (!q || (m.home + ' ' + m.away + ' ' + m.tourName).toLowerCase().includes(q)));
+    return ms;
   }
-  function scannerRows() {
-    const f = S.ui.scanner, t = now();
-    let list = scannerBase().filter((m) => (f.sport === 'all' || m.sport === f.sport) && (f.league === 'all' || m.leagueId === f.league) && (f.country === 'all' || m.country === f.country));
-    if (f.status !== 'all') list = list.filter((m) => D.status(m, t) === f.status);
-    if (f.window !== 'all') {
-      const hrs = { next1: 1, next3: 3, next6: 6 }[f.window];
-      if (hrs) list = list.filter((m) => m.start > t && m.start - t <= hrs * 3600e3);
-      else { const [a, b] = { night: [0, 6], morning: [6, 12], afternoon: [12, 18], evening: [18, 24] }[f.window]; list = list.filter((m) => { const h = new Date(m.start).getHours(); return h >= a && h < b; }); }
-    }
-    const q = f.q.trim().toLowerCase();
-    if (q) list = list.filter((m) => (m.home + ' ' + m.away + ' ' + m.league + ' ' + m.country).toLowerCase().includes(q));
-    let rows = list.map((m) => ({ m, a: an(m) }));
-    if (+f.conf) rows = rows.filter((r) => r.a.best.conf.value >= +f.conf);
-    if (+f.interest) rows = rows.filter((r) => r.a.interest >= +f.interest);
-    if (f.market !== 'all') rows = rows.filter((r) => (f.market === 'side' ? ['1X2', 'ML'].includes(r.a.best.mk) : r.a.best.mk === f.market));
-    const sorters = { time: (x, y) => x.m.start - y.m.start, interest: (x, y) => y.a.interest - x.a.interest, value: (x, y) => y.a.best.value - x.a.best.value, conf: (x, y) => y.a.best.conf.value - x.a.best.conf.value };
-    return rows.sort(sorters[f.sort] || sorters.time);
+  function matchesList() {
+    const ms = matchesBase();
+    if (!ms.length) return empty('Матчів не знайдено', 'Спробуйте інший день, вид спорту чи пошуковий запит.');
+    const groups = {}; const order = [];
+    ms.forEach((m) => { if (!groups[m.tour]) { groups[m.tour] = []; order.push(m.tour); } groups[m.tour].push(m); });
+    order.sort((a, b) => D.TOURS.findIndex((x) => x.id === a) - D.TOURS.findIndex((x) => x.id === b));
+    return order.map((k) => { const T = D.TOUR[k]; return '<div class="grp"><div class="grp-h">' + sportIc(T.sport) + '<b>' + esc(T.name) + '</b><span>' + esc(T.region) + '</span><em>' + groups[k].length + '</em></div>' + groups[k].map((m) => matchRow(m, true)).join('') + '</div>'; }).join('');
   }
-  function scannerResults() {
-    const rows = scannerRows(); const f = S.ui.scanner;
-    if (!rows.length) return empty('No matches for these filters', 'Try another date, clear the search or reset filters.', '<button type="button" class="btn" data-act="scan-reset">Reset filters</button>');
-    let html = '<div class="res-n">' + rows.length + ' match' + (rows.length === 1 ? '' : 'es') + (f.sort !== 'time' ? ', sorted by ' + { interest: 'interest', value: 'model-market difference', conf: 'confidence' }[f.sort] : '') + '</div>';
-    if (f.sort === 'time') {
-      const groups = {}; const order = [];
-      rows.forEach((r) => { const k = r.m.leagueId; if (!groups[k]) { groups[k] = []; order.push(k); } groups[k].push(r); });
-      order.sort((a, b) => groups[a][0].m.start - groups[b][0].m.start);
-      html += order.map((k) => { const L = D.LEAGUE_BY_ID[k]; return '<div class="lg-grp"><div class="lg-h">' + sportTag(L.sport) + '<b>' + esc(L.name) + '</b><span>' + esc(L.country) + '</span><em>' + groups[k].length + '</em></div><div class="mlist">' + groups[k].map((r) => matchRow(r.m, { date: f.date === 'all' })).join('') + '</div></div>'; }).join('');
-    } else html += '<div class="mlist">' + rows.map((r) => matchRow(r.m, { league: true })).join('') + '</div>';
-    return html;
-  }
-  V.scanner = () => {
-    const f = S.ui.scanner; const base = scannerBase();
-    const set = (k) => (v) => { f[k] = v; if (k === 'sport' && f.league !== 'all' && D.LEAGUE_BY_ID[f.league].sport !== v && v !== 'all') f.league = 'all'; save(); rerender(); };
-    const sportsCnt = {}; base.forEach((m) => (sportsCnt[m.sport] = (sportsCnt[m.sport] || 0) + 1));
-    const leagues = D.LEAGUES.filter((L) => f.sport === 'all' || L.sport === f.sport);
-    const countries = [...new Set(D.LEAGUES.map((L) => L.country))].sort();
-    const lsel = [{ v: 'all', l: 'All leagues' }].concat(leagues.map((L) => ({ v: L.id, l: L.name + (L.name === 'Premier League' || L.name === 'Serie A' ? ' (' + L.country + ')' : ''), n: base.filter((m) => m.leagueId === L.id).length })));
-    const bar = '<div class="filters">' +
-      '<div class="fsearch">' + icon('search') + '<input type="search" id="scan-q" placeholder="Search team, player, league, country" value="' + esc(f.q) + '" data-input="scan-q" aria-label="Search matches" autocomplete="off"></div>' +
-      datePicker('scan-date', f.date, set('date')) +
-      dd('scan-league', lsel, f.league, set('league'), { label: 'League' }) +
-      dd('scan-country', [{ v: 'all', l: 'All countries' }].concat(countries.map((c) => ({ v: c, l: c }))), f.country, set('country'), { label: 'Country' }) +
-      dd('scan-status', [{ v: 'all', l: 'Live + upcoming + finished' }, { v: 'live', l: 'Live only' }, { v: 'upcoming', l: 'Upcoming only' }, { v: 'finished', l: 'Finished only' }], f.status, set('status'), { label: 'Status' }) +
-      dd('scan-window', WINDOWS.map(([v, l]) => ({ v, l })), f.window, set('window'), { label: 'Start time' }) +
-      dd('scan-market', [{ v: 'all', l: 'Any market' }, { v: 'side', l: 'Result / winner' }, { v: 'OU', l: 'Totals' }, { v: 'BTTS', l: 'Both teams to score' }], f.market, set('market'), { label: 'Best market' }) +
-      dd('scan-interest', [['0', 'Any interest'], ['40', 'Interest 40+'], ['55', 'Interest 55+'], ['70', 'Interest 70+']].map(([v, l]) => ({ v, l })), f.interest, set('interest'), { label: 'Interest' }) +
-      dd('scan-conf', [['0', 'Any confidence'], ['50', 'Confidence 50+'], ['60', 'Confidence 60+'], ['66', 'High (66+)']].map(([v, l]) => ({ v, l })), f.conf, set('conf'), { label: 'Confidence' }) +
-      dd('scan-sort', [['time', 'Sort: start time'], ['interest', 'Sort: interest'], ['value', 'Sort: difference'], ['conf', 'Sort: confidence']].map(([v, l]) => ({ v, l })), f.sort, set('sort'), { label: 'Sort' }) +
-      '<button type="button" class="btn btn-ghost btn-sm" data-act="scan-reset">Reset</button></div>';
-    const chips = '<div class="chips hscroll" role="group" aria-label="Sport">' + chip('scan-sport', 'all', 'All <em>' + base.length + '</em>', f.sport === 'all') + Object.values(D.SPORTS).map((sp) => chip('scan-sport', sp.id, esc(sp.name) + ' <em>' + (sportsCnt[sp.id] || 0) + '</em>', f.sport === sp.id)).join('') + '</div>';
-    return pageHead('Match scanner', 'All sports, one compact list. Value and confidence columns are internal model estimates. ' + demoTag()) +
-      chips + bar + '<div id="scan-results" class="scan-results">' + scannerResults() + '</div>';
+  onInput('mq', (el) => { S.ui.q = el.value; save(); const l = document.getElementById('mlist'); if (l) l.innerHTML = matchesList(); });
+  V.matches = function () {
+    const ds = U.ds(now());
+    const days = [['-1', 'Вчора'], ['0', 'Сьогодні'], ['1', 'Завтра'], ['2', new Date(U.dayStart(U.addDays(ds, 2))).toLocaleDateString('uk-UA', { weekday: 'short', day: 'numeric', month: 'short' })]];
+    const all = D.matchesForDate(U.addDays(ds, Number(S.ui.mDay)));
+    const cnt = (sp) => all.filter((m) => sp === 'all' || m.sport === sp).length;
+    return head('Матчі', 'Усі матчі з демо-фіду. Праворуч у кожному рядку найпомітніший сигнал моделі.') +
+      '<div class="filters">' + chips('ui.mDay', days) + chips('ui.mSport', sportOpts().map(([v, l]) => [v, l, cnt(v)])) +
+      '<div class="frow"><label class="search">' + icon('list') + '<input type="search" placeholder="Команда, гравець або турнір" value="' + esc(S.ui.q) + '" data-in="mq" aria-label="Пошук матчів"></label>' +
+      select('ui.mStatus', [['all', 'Усі статуси'], ['live', 'Наживо'], ['upcoming', 'Ще не почалися'], ['finished', 'Завершені']]) + '</div></div>' +
+      '<div id="mlist">' + matchesList() + '</div>';
   };
-  on('input:scan-q', (el) => { S.ui.scanner.q = el.value; save(); const r = document.getElementById('scan-results'); if (r) { r.innerHTML = scannerResults(); A.mountCharts(); } });
-  on('scan-sport', (el) => { S.ui.scanner.sport = el.dataset.v; if (S.ui.scanner.league !== 'all' && el.dataset.v !== 'all' && D.LEAGUE_BY_ID[S.ui.scanner.league].sport !== el.dataset.v) S.ui.scanner.league = 'all'; save(); rerender(); });
-  on('scan-reset', () => { S.ui.scanner = A.defaultState().ui.scanner; save(); rerender(); });
 
-  /* ---------------- shared: live radar ---------------- */
-  function liveFlags(m, l) {
-    const flags = []; const mo = l.momentum || [];
-    if (mo.length >= 6) {
-      const r = avg(mo.slice(-3)), p = avg(mo.slice(-6, -3));
-      if (Math.sign(r) !== Math.sign(p) && Math.abs(r - p) > 0.5) flags.push(['Momentum shift', (r > 0 ? m.home : m.away) + ' have controlled the most recent phase after being second best before it.']);
-    }
-    if (l.h != null && l.h !== l.a && m.sport !== 'mma') {
-      const lead = l.h > l.a ? 'home' : 'away'; const pre = m.markets[0].sels.find((s) => s.key === lead).close;
-      if (pre >= 2.6) flags.push(['Unexpected performance', (lead === 'home' ? m.home : m.away) + ' lead despite pre-match odds of ' + odds(pre) + '.']);
-    }
-    const op = l.oddsPath || [];
-    if (op.length >= 3) {
-      const mv = (op[op.length - 1] - op[0]) / op[0];
-      if (Math.abs(mv) > 0.25) {
-        const why = (l.events || []).length ? 'score changes (' + l.events.slice(-2).map((e) => (e.side === 'home' ? m.home : m.away) + (e.t ? ' ' + e.t + (m.sport === 'football' ? "'" : '') : '')).join(', ') + ')' : 'time decay with the current score';
-        flags.push(['Market movement', m.home + ' win odds moved ' + odds(op[0]) + ' to ' + odds(op[op.length - 1]) + '. Possible explanation: ' + why + '.']);
-      }
-    }
-    return flags;
+  /* ================= МАТЧ ================= */
+  function teamBlock(name, form, right) {
+    const fav = S.fav.includes(name);
+    return '<div class="team' + (right ? ' r' : '') + '"><span class="crest">' + esc(initials(name)) + '</span><b>' + esc(name) + '</b><span class="pills">' + form.slice(0, 5).map((g) => '<i class="pill p' + ({ 'В': 'w', 'Н': 'd', 'П': 'l' }[g.res]) + '" title="' + esc((g.home ? 'вдома з ' : 'у гостях з ') + g.opp + ', ' + g.f + ':' + g.a) + '">' + g.res + '</i>').join('') + '</span>' +
+      '<button type="button" class="favb' + (fav ? ' on' : '') + '" data-act="fav" data-team="' + esc(name) + '" aria-pressed="' + fav + '">' + icon('star') + (fav ? 'В обраному' : 'В обране') + '</button></div>';
   }
-  function statBar(label, h, a, suffix) {
-    const tot = (h || 0) + (a || 0) || 1;
-    return '<div class="stb"><span class="stb-v">' + h + (suffix || '') + '</span><div class="stb-m"><span class="stb-l">' + label + '</span><div class="stb-t"><i class="stb-h" style="width:' + ((h / tot) * 100).toFixed(1) + '%"></i><i class="stb-a" style="width:' + ((a / tot) * 100).toFixed(1) + '%"></i></div></div><span class="stb-v">' + a + (suffix || '') + '</span></div>';
+  function tabAnalysis(m, a) {
+    const key = S.ui.mSel[m.id]; let s = a.best;
+    if (key) { const [mk, k] = key.split('|'); const MK = a.markets.find((x) => x.key === mk); const f = MK && MK.sels.find((x) => x.key === k); if (f) s = f; }
+    const picker = a.markets.map((MK) => '<div class="mk"><span class="mk-n">' + esc(MK.name) + '</span><div class="mk-s">' + MK.sels.map((x) => '<button type="button" class="opt' + (x === s ? ' on' : '') + '" data-act="msel" data-id="' + esc(m.id) + '" data-k="' + MK.key + '|' + x.key + '"><span>' + esc(x.label) + '</span><b>' + odds(x.odds) + '</b>' + valB(x.value) + '</button>').join('') + '</div></div>').join('');
+    const aiB = S.bets.ai.filter((b) => b.matchId === m.id);
+    return (a.status !== 'upcoming' ? note('Це оцінка моделі до початку матчу. Події самого матчу модель не враховує.') : '') +
+      (aiB.length ? '<div class="ai-hold">' + icon('ai') + '<span>AI-аналітик поставив: ' + aiB.map((b) => '<a href="#/ai/' + b.id + '">' + esc(b.selection) + ', коеф. ' + odds(b.odds) + ', ' + money(b.stake) + ' (' + RES[b.status].toLowerCase() + ')</a>').join('; ') + '</span></div>' : '') +
+      '<div class="an">' +
+      '<div class="an-pick"><h3>Оберіть варіант</h3>' + picker + '</div>' +
+      '<div class="an-main">' +
+      '<div class="sel-h"><div><small>' + esc(s.mkName) + '</small><h3>' + esc(s.label) + '</h3></div><span class="big-o">' + odds(s.odds) + '</span></div>' +
+      '<div class="nums"><div><span>Модель</span><b class="acc">' + pct(s.model) + '</b></div><div><span>Ринок</span><b>' + pct(s.implied) + '</b></div><div><span>Різниця</span><b class="' + plCls(s.value) + '">' + pp(s.value) + '</b></div><div><span>Впевненість</span><b>' + s.conf.value + '<small> / 100</small></b></div></div>' +
+      probBars(s.model, s.implied) + '<div class="badges">' + confB(s.conf) + riskB(s.risk.level) + '</div>' +
+      '<h4>Пояснення</h4><p class="lead">' + esc(M.reasoning(s)) + '</p>' +
+      '<h4>Фактори</h4>' + factorRows(s.factors) +
+      '<h4>Аргументи проти</h4><ul class="against">' + M.against(s).map((x) => '<li>' + esc(x) + '</li>').join('') + '</ul>' +
+      '<p class="fine">Модель показує можливу статистичну перевагу, а не гарантований результат. Різниця з ринком частіше означає помилку моделі, ніж помилку букмекерів.</p>' +
+      (a.status === 'upcoming' ? '<button type="button" class="btn primary" data-act="bet-new" data-id="' + esc(m.id) + '" data-k="' + s.mk + '|' + s.key + '">' + icon('plus') + 'Додати цю ставку в кабінет</button>' : '') +
+      '</div></div>';
   }
-  const pctB = (x) => (x > 0.995 ? '>99%' : x < 0.005 ? '<1%' : pct(x, 0));
-  function radar(m, big) {
-    const t = now(); const l = D.live(m, t); const flags = liveFlags(m, l);
-    const head = '<a class="rd-h" href="' + mlink(m) + '"><div class="rd-meta">' + sportTag(m.sport) + '<span>' + esc(m.league) + '</span>' + statusTag(m) + '</div>' +
-      '<div class="rd-sc"><span class="rd-t">' + esc(m.home) + '</span><span class="rd-n">' + (l.h == null ? '<em>vs</em>' : l.h + '<i>:</i>' + l.a) + '</span><span class="rd-t r">' + esc(m.away) + '</span></div>' +
-      (l.sets && l.sets.length ? '<div class="rd-sets">Sets: ' + l.sets.map((s) => s[0] + '-' + s[1]).join(', ') + '</div>' : '') +
-      '<div class="rd-prog"><i style="width:' + Math.round(l.progress * 100) + '%"></i></div></a>';
-    let body = '';
-    if (l.stats) body += '<div class="stbs">' + statBar('Shots', l.stats.shots[0], l.stats.shots[1]) + statBar('On target', l.stats.sot[0], l.stats.sot[1]) + statBar('Possession', l.stats.poss[0], l.stats.poss[1], '%') + statBar('Corners', l.stats.corners[0], l.stats.corners[1]) + statBar('Cards', l.stats.cards[0], l.stats.cards[1]) + '</div>';
-    else body += '<div class="insuff-b">' + icon('info') + '<span>Shots, possession and similar stats: <b>Insufficient data.</b> The demo feed only provides score, clock and an in-play win estimate for ' + esc(D.SPORTS[m.sport].name.toLowerCase()) + '.</span></div>';
-    body += '<div class="rd-row"><div class="rd-mom"><span class="lbl">Momentum <em>' + esc(m.home) + ' up, ' + esc(m.away) + ' down</em></span>' + momentumBar(l.momentum) + '</div>';
-    if (l.pHome != null) body += '<div class="rd-wp"><span class="lbl">In-play estimate</span><b>' + pctB(l.pHome) + '</b><small>' + esc(m.home) + (m.sport === 'football' && l.pDraw != null ? ' · draw ' + pctB(l.pDraw) : '') + '</small></div>';
-    body += '</div>';
-    if (l.oddsPath && l.oddsPath.length >= 2) body += '<div class="rd-odds"><span class="lbl">Odds movement <em>' + esc(m.home) + ' win, demo in-play feed</em></span>' + (big ? chart('line', { series: [{ name: m.home + ' win', values: l.oddsPath, color: 'var(--info)' }], labels: l.oddsPath.map((_, i) => (m.sport === 'football' ? Math.min(i * 5, 90) + "'" : 'T' + i)), yFmt: (v) => v.toFixed(2), height: 150 }) : spark(l.oddsPath, 260, 34, 'var(--info)')) + '</div>';
-    else body += '<div class="rd-odds dim">Odds movement: insufficient in-play price data yet.</div>';
-    if (l.events && l.events.length && big) body += '<div class="rd-ev"><span class="lbl">Scoring events</span>' + l.events.map((e) => '<span class="ev ev-' + e.side + '">' + (e.t ? e.t + (m.sport === 'football' ? "'" : '') + ' ' : '') + esc(e.type) + ' · ' + esc(e.side === 'home' ? m.home : m.away) + '</span>').join('') + '</div>';
-    body += flags.length ? '<div class="flags">' + flags.map((f) => '<div class="flag"><b>' + icon('zap') + f[0] + '</b><span>' + esc(f[1]) + '</span></div>').join('') + '</div>' : '<div class="flags none">No flags. Nothing unusual in score, momentum or price.</div>';
-    return '<article class="radar ' + (big ? 'big' : '') + '">' + head + '<div class="rd-b">' + body + '</div></article>';
+  function formTable(games, sport) {
+    return '<table class="tbl"><tbody>' + games.map((g) => '<tr><td><i class="pill p' + ({ 'В': 'w', 'Н': 'd', 'П': 'l' }[g.res]) + '">' + g.res + '</i></td><td>' + (sport === 'football' ? (g.home ? 'вдома, ' : 'у гостях, ') : '') + esc(g.opp) + '</td><td class="r b">' + g.f + ':' + g.a + '</td><td class="r muted">' + g.daysAgo + ' дн. тому</td></tr>').join('') + '</tbody></table>';
   }
-
-  /* ---------------- MATCH ANALYSIS ---------------- */
-  const initials = (n) => n.split(/\s+/).filter((w) => /^[A-Z0-9]/.test(w)).slice(0, 3).map((w) => w[0]).join('') || n.slice(0, 2).toUpperCase();
-  const formPills = (games) => '<span class="fp">' + games.map((g) => '<i class="fp-' + g.res.toLowerCase() + '" data-tip="' + esc(g.date + ' ' + (g.home ? 'vs ' : 'at ') + g.opp + ' ' + g.f + '-' + g.a) + '">' + g.res + '</i>').join('') + '</span>';
-  function factorRows(factors) {
-    return '<div class="fct">' + factors.map((f) => '<div class="fct-r ' + (f.missing ? 'miss' : '') + '"><span class="fct-k">' + esc(f.label.toUpperCase()) + '</span><span class="fct-b"><i class="' + (f.value >= 0 ? 'pos' : 'neg') + '" style="width:' + Math.min(50, Math.abs(f.value) * 6) + '%;' + (f.value >= 0 ? 'left:50%' : 'right:50%') + '"></i></span><b class="fct-v ' + plClass(f.value) + '">' + (f.missing ? 'n/a' : signed(f.value, 0)) + '</b><span class="fct-d">' + esc(f.detail) + '</span></div>').join('') + '</div>';
-  }
-  function bulletList(items, cls) { return '<ul class="bl ' + (cls || '') + '">' + items.map((x) => '<li>' + esc(x) + '</li>').join('') + '</ul>'; }
-
-  function matchAnalysisTab(m, a) {
-    const sels = a.markets.flatMap((x) => x.sels);
-    const s = sels.find((x) => x.mk + '|' + x.key === S.ui.matchSel[m.id]) || a.best;
-    const selTable = '<div class="tw"><table class="tbl tbl-sel"><thead><tr><th>Market</th><th>Selection</th><th class="num">Odds</th><th class="num">Model</th><th class="num">Implied</th><th class="num">Diff.</th><th class="num">Conf.</th></tr></thead><tbody>' +
-      sels.map((x) => '<tr class="clk ' + (x === s ? 'on' : '') + '" data-act="msel" data-id="' + esc(m.id) + '" data-v="' + x.mk + '|' + x.key + '" tabindex="0"><td>' + esc(x.mkName) + '</td><td><b>' + esc(selText(x)) + '</b>' + (x === a.best ? ' <span class="best">best</span>' : '') + '</td><td class="num">' + odds(x.odds) + '</td><td class="num">' + pct(x.model) + '</td><td class="num">' + pct(x.implied) + '</td><td class="num">' + valTag(x.value) + '</td><td class="num">' + confTag(x.conf) + '</td></tr>').join('') + '</tbody></table></div>';
-    const model = '<div class="mdl">' +
-      '<div class="mdl-sel"><span>' + esc(s.mkName) + '</span><b>' + esc(selText(s)) + '</b><em>@ ' + odds(s.odds) + '</em></div>' +
-      '<div class="kg k3">' + kpi('Model probability', pct(s.model), 'internal estimate') + kpi('Implied probability', pct(s.implied), 'from odds, incl. margin') + kpi('Difference', pp(s.value), 'model minus implied', s.value > 0 ? 'pos' : 'neg') +
-      kpi('Potential value', signed(s.ev * 100) + '%', 'expected return per unit', s.ev > 0 ? 'pos' : 'neg', 'Model probability x odds - 1. Only as good as the model estimate.') + kpi('Confidence', confTag(s.conf), s.conf.level + ' · agreement ' + Math.round(s.conf.agreement * 100) + '%') + kpi('Model score', s.score + '<small>/100</small>', 'internal estimate', '', 'Sum of factor points mapped to 1-99. Not a probability.') + '</div>' +
-      '<div class="sub-h">Model transparency <small>factor points from this selection\'s perspective</small></div>' + factorRows(s.factors) + '</div>';
-    const ai = '<p class="reason">' + esc(s.reasoning) + '</p>' +
-      (s.positives.length ? '<div class="sub-h pos">Arguments for</div>' + bulletList(s.positives.map((f) => f.label + ' (' + signed(f.value, 0) + '): ' + f.detail)) : '<div class="sub-h">Arguments for</div><p class="dim">No supporting factor of note.</p>') +
-      '<div class="llm-note">' + icon('info') + 'Text produced by the deterministic demo engine. ' + (E.llm.enabled ? 'LLM explanations enabled.' : 'An LLM can be connected in engine.js (SIT.Engine.llm).') + '</div>';
-    const risks = '<div class="risk-h">' + riskTag(s.risk.level) + '<span>' + s.risk.risks.length + ' flagged risk(s) · arguments against are always shown</span></div>' + bulletList(s.against, 'against');
-    return '<div class="grid">' +
-      panel('AI analysis', ai, { cls: 'c7' }) +
-      panel('Risks <small>arguments against</small>', risks, { cls: 'c5 risk-panel' }) +
-      panel('Model', model, { cls: 'c7', right: D.status(m) === 'finished' ? '' : '<button type="button" class="btn btn-sm" data-act="track" data-id="' + esc(m.id) + '" data-v="' + s.mk + '|' + s.key + '">' + icon('plus') + 'Track in journal</button>' }) +
-      panel('All selections', selTable, { cls: 'c5', flush: true }) + '</div>';
-  }
-  function statsTab(m) {
-    const c = m.ctx; const sp = m.sport; const team = !['tennis', 'mma'].includes(sp); const unit = D.SPORTS[sp].unit;
-    const ppg = (g) => (g.slice(0, 5).reduce((a, x) => a + (x.res === 'W' ? 3 : x.res === 'D' ? 1 : 0), 0) / 5).toFixed(2);
-    const formRow = (name, g) => '<div class="form-r"><b>' + esc(name) + '</b>' + formPills(g) + '<span class="dim">' + ppg(g) + ' pts/g last 5 · ' + g.reduce((a, x) => a + x.f, 0) + '-' + g.reduce((a, x) => a + x.a, 0) + ' ' + unit + ' last 10</span></div>';
-    const lastList = (name, g) => '<div class="last"><div class="sub-h">' + esc(name) + '</div>' + g.slice(0, 6).map((x) => '<div class="last-r"><span class="dim">' + fmtD(U.parseDate(x.date).getTime()) + '</span><span>' + (x.home ? 'vs ' : '@ ') + esc(x.opp) + '</span><b class="fp-' + x.res.toLowerCase() + '">' + x.f + '-' + x.a + '</b></div>').join('') + '</div>';
-    const form = formRow(m.home, c.formH) + formRow(m.away, c.formA) + '<div class="two">' + lastList(m.home, c.formH) + lastList(m.away, c.formA) + '</div>';
-    const h2h = c.h2h.length ? '<div class="h2h-s">' + (() => { const hw = c.h2h.filter((x) => x.aScore > x.bScore).length, aw = c.h2h.filter((x) => x.aScore < x.bScore).length; return '<span><b>' + hw + '</b>' + esc(m.home) + '</span><span><b>' + (c.h2h.length - hw - aw) + '</b>Draws</span><span><b>' + aw + '</b>' + esc(m.away) + '</span>'; })() + '</div>' +
-      c.h2h.map((x) => '<div class="last-r"><span class="dim">' + fmtD(U.parseDate(x.date).getTime()) + '</span><span>' + esc(x.home) + ' vs ' + esc(x.away) + '</span><b>' + x.hs + '-' + x.as + '</b></div>').join('') + (c.h2h.length < 3 ? note('Small sample: ' + c.h2h.length + ' meeting(s). Treat head to head as weak evidence.', 'warn') : '')
-      : '<p class="insuff">Insufficient data. No previous meetings in the data set.</p>';
-    const split = (name, s, where) => '<div class="split"><b>' + esc(name) + ' <small>' + where + ', last 10</small></b><div class="split-n"><span><i>W-D-L</i>' + s.w + '-' + s.d + '-' + s.l + '</span><span><i>Scored</i>' + s.avgF.toFixed(1) + '</span><span><i>Conceded</i>' + s.avgA.toFixed(1) + '</span></div></div>';
-    const ha = team ? split(m.home, c.splitH, 'at home') + split(m.away, c.splitA, 'away') : '<p class="insuff">Not applicable. ' + esc(D.SPORTS[sp].name) + ' events are on neutral ground.</p>';
-    const tf = (E.analyzeMatch(m, now()).totalFactors) || [];
-    const scoring = tf.length ? factorRows(tf) + '<p class="dim small">Points are from the Over perspective for the main total line (' + m.markets.find((x) => x.key === 'OU').line + ').</p>' : '<p class="insuff">Insufficient data.</p>';
-    const nx = (name, n) => (n ? '<div class="last-r"><span>' + esc(name) + '</span><span>' + (n.european ? '<span class="cat cat-variance">' + esc(n.comp) + '</span> ' : esc(n.comp) + ' ') + 'vs ' + esc(n.opp) + '</span><b>in ' + n.days + 'd</b></div>' : '');
-    const sched = '<div class="kg k2">' + (sp === 'mma' ? kpi('Rest', 'n/a', 'camp length unknown') + kpi('', '', '') : kpi(m.home + ' rest', c.restH + ' days', 'since last game') + kpi(m.away + ' rest', c.restA + ' days', 'since last game')) + '</div>' +
-      (c.nextH || c.nextA ? '<div class="sub-h">Next fixtures</div>' + nx(m.home, c.nextH) + nx(m.away, c.nextA) : '') +
-      (c.lastMatchMins ? '<div class="sub-h">Previous match duration</div><div class="last-r"><span>' + esc(m.home) + '</span><b>' + c.lastMatchMins.home + ' min</b></div><div class="last-r"><span>' + esc(m.away) + '</span><b>' + c.lastMatchMins.away + ' min</b></div>' : '');
-    let motiv = '';
-    if (c.table) {
-      const rows = c.table.rows; const rh = rows.find((x) => x.team === m.home), ra = rows.find((x) => x.team === m.away); const top = rows[0];
-      motiv = '<p class="dim small">Objective standings only. No assumptions about attitude or desire.</p><div class="tw"><table class="tbl tbl-mini"><thead><tr><th>#</th><th>Team</th><th class="num">P</th><th class="num">W</th>' + (sp === 'football' ? '<th class="num">D</th>' : '') + '<th class="num">L</th><th class="num">Pts</th><th class="num">Gap to 1st</th></tr></thead><tbody>' +
-        rows.map((x) => '<tr class="' + (x === rh || x === ra ? 'hl' : '') + '"><td>' + x.pos + '</td><td>' + esc(x.team) + '</td><td class="num">' + x.p + '</td><td class="num">' + x.w + '</td>' + (sp === 'football' ? '<td class="num">' + x.d + '</td>' : '') + '<td class="num">' + x.l + '</td><td class="num"><b>' + x.pts + '</b></td><td class="num">' + (x === top ? '-' : top.pts - x.pts) + '</td></tr>').join('') + '</tbody></table></div>';
-    } else if (c.series) motiv = '<div class="kg k3">' + kpi('Series', c.series.h + '-' + c.series.a, 'best of ' + c.series.bestOf) + kpi('Game', String(c.series.game), 'in series') + kpi('Elimination game', c.series.h === 2 || c.series.a === 2 ? 'Yes' : 'No', 'objective') + '</div>';
-    else motiv = '<p class="insuff">Insufficient data. No standings for this competition in the demo feed' + (['basketball', 'hockey'].includes(sp) ? ' this early in the season' : '') + '.</p>';
-    return '<div class="grid">' + panel('Form <small>last 10, newest first</small>', form, { cls: 'c7' }) + panel('Head to head', h2h, { cls: 'c5' }) +
-      panel('Home / away', ha, { cls: 'c4' }) + panel('Scoring profile', scoring, { cls: 'c4' }) + panel('Schedule & rest', sched, { cls: 'c4' }) +
-      panel('Motivation & standings', motiv, { cls: 'c12', flush: !!c.table }) + '</div>';
-  }
-  function teamTab(m) {
-    const c = m.ctx; const team = !['tennis', 'mma'].includes(m.sport);
-    const injT = (side) => { const inj = c.injuries[side], sus = c.suspensions[side]; if (!inj.length && !sus.length) return '<p class="dim">No reported absences.</p>';
-      return inj.map((p) => '<div class="pl-r"><span class="pl-s ' + (p.status === 'Out' ? 'out' : 'doubt') + '">' + p.status + '</span><b>' + esc(p.name) + '</b><span class="dim">' + esc(p.role) + ' · ' + esc(p.reason) + (p.back ? ' · back ~' + fmtD(U.parseDate(p.back).getTime()) : '') + '</span><em data-tip="Share of team output (demo stat)">' + p.contrib + '%</em></div>').join('') +
-        sus.map((p) => '<div class="pl-r"><span class="pl-s out">Susp.</span><b>' + esc(p.name) + '</b><span class="dim">' + esc(p.role) + ' · ' + esc(p.reason) + '</span><em>' + p.contrib + '%</em></div>').join(''); };
-    const abs = team ? '<div class="two"><div><div class="sub-h">' + esc(m.home) + '</div>' + injT('home') + '</div><div><div class="sub-h">' + esc(m.away) + '</div>' + injT('away') + '</div></div>' : '<p class="insuff">Insufficient data. No injury feed for individual sports in the demo provider.</p>';
-    let lu;
-    if (m.sport !== 'football') lu = '<p class="insuff">Insufficient data. Expected lineups are only available for football in the demo feed.</p>';
-    else if (!c.lineups) lu = '<p class="insuff">Insufficient data. The lineup feed has nothing for this match yet. The model lowers confidence accordingly.</p>';
-    else lu = '<div class="two">' + ['home', 'away'].map((sd) => '<div><div class="sub-h">' + esc(sd === 'home' ? m.home : m.away) + ' <small>' + c.lineups[sd].formation + ', expected</small></div><ol class="xi">' + c.lineups[sd].players.map((p) => '<li class="' + (p.doubt ? 'doubt' : '') + '"><span>' + esc(p.name) + '</span><small>' + esc(p.role) + (p.doubt ? ' · doubtful' : '') + '</small></li>').join('') + '</ol></div>').join('') + '</div>';
-    const news = D.newsForMatch(m, now());
-    return '<div class="grid">' + panel('Injuries & suspensions', abs, { cls: 'c6' }) + panel('Expected lineups', lu, { cls: 'c6' }) +
-      panel('Match news <em class="cnt">' + news.length + '</em>', news.length ? '<div class="news-l">' + news.map((n) => newsCard(n)).join('') + '</div>' : empty('No linked news', 'No news items mention this match in the demo feed.'), { cls: 'c12' }) + '</div>';
-  }
-  function oddsTab(m) {
-    const t = now(); const mks = D.markets(m, t);
-    const curSel = (S.ui.matchSel[m.id] || '').split('|')[0];
-    const mkKey = mks.some((x) => x.key === curSel) ? curSel : mks[0].key; const mk = mks.find((x) => x.key === mkKey);
-    const COLORS = ['var(--signal)', 'var(--info)', 'var(--muted)'];
-    const tbl = '<div class="tw"><table class="tbl"><thead><tr><th>Market</th><th>Selection</th><th class="num">Opening</th><th class="num">Current</th><th class="num">Move</th><th class="num">Implied</th></tr></thead><tbody>' +
-      mks.map((x) => { const over = x.sels.reduce((a, s) => a + 1 / s.odds, 0); return x.sels.map((s, i) => { const mv = (s.odds - s.open) / s.open; return '<tr>' + (i === 0 ? '<td rowspan="' + x.sels.length + '">' + esc(x.name) + '<br><small class="dim">margin ' + ((over - 1) * 100).toFixed(1) + '%</small></td>' : '') + '<td><b>' + esc(x.key === 'BTTS' ? 'BTTS ' + s.label : s.label) + '</b></td><td class="num">' + odds(s.open) + '</td><td class="num"><b>' + odds(s.odds) + '</b></td><td class="num ' + (Math.abs(mv) < 0.005 ? '' : mv < 0 ? 'neg' : 'pos') + '">' + (mv > 0 ? '+' : '') + (mv * 100).toFixed(1) + '%</td><td class="num">' + pct(1 / s.odds) + '</td></tr>'; }).join(''); }).join('') + '</tbody></table></div>';
-    const hist = mk.sels.map((s) => D.oddsHistory(m, mk.key, s.key));
-    const visible = hist.map((h) => h.filter((p) => p.t <= t));
-    const n = Math.max(...visible.map((h) => h.length));
-    const ch = n >= 2 ? chart('line', { series: mk.sels.map((s, i) => ({ name: s.label, values: visible[i].map((p) => p.o), color: COLORS[i] })), labels: visible[0].map((p) => dayLabel(p.t) + ' ' + time(p.t)), yFmt: (v) => v.toFixed(2), height: 220 }) + legend(mk.sels.map((s, i) => [s.label, COLORS[i]])) : '<div class="chart-empty">Not enough price history yet. The demo feed opens markets 72 hours before start.</div>';
-    const moves = mk.sels.map((s) => ({ s, mv: (s.odds - s.open) / s.open })).sort((a, b) => Math.abs(b.mv) - Math.abs(a.mv));
-    const big = moves[0];
-    const news = D.newsForMatch(m, t).filter((x) => x.effect);
-    let expl;
-    if (Math.abs(big.mv) < 0.05) expl = 'Prices are broadly stable (largest move ' + (big.mv * 100).toFixed(1) + '%). No explanation needed.';
-    else {
-      const side = big.s.key; const shortening = big.mv < 0;
-      const linked = news.filter((x) => (side === 'home' || side === 'away') && x.effect.side && ((x.effect.side === side) !== shortening));
-      expl = big.s.label + ' moved ' + odds(big.s.open) + ' to ' + odds(big.s.odds) + ' (' + signed(big.mv * 100) + '%). ' +
-        (linked.length ? 'Linked news that is consistent with this move: ' + linked.map((x) => x.headline).join('; ') + '.' : 'No linked news found in the demo feed. The move may reflect betting volume or information the model does not see.');
-    }
-    return '<div class="grid">' + panel('Market odds', tbl, { cls: 'c6', flush: true }) +
-      panel('Odds movement', '<div class="mk-pick">' + mks.map((x) => chip('mk-pick', m.id + '|' + x.key, esc(x.name), x.key === mkKey)).join('') + '</div>' + ch + '<div class="expl"><span class="lbl">Possible explanation <em>AI interpretation, not confirmed</em></span><p>' + esc(expl) + '</p></div>', { cls: 'c6' }) + '</div>';
-  }
-  function reviewHtml(b) {
-    const r = b.review; if (!r) return '<p class="insuff">Post-match analysis is available after settlement.</p>';
-    return '<div class="rv">' +
-      '<div class="rv-b"><span class="lbl">Before match</span><p>' + esc(r.before) + '</p></div>' +
-      '<div class="rv-b"><span class="lbl">After match</span><p>' + esc(r.after) + '</p></div>' +
-      '<div class="two"><div class="rv-b"><span class="lbl pos">What was correct</span>' + bulletList(r.correct) + '</div><div class="rv-b"><span class="lbl neg">What was wrong</span>' + bulletList(r.wrong) + '</div></div>' +
-      '<div class="rv-b"><span class="lbl">Model error</span><p>' + esc(r.modelError) + '</p></div>' +
-      '<div class="rv-b lesson"><span class="lbl">Lesson</span><p>' + esc(r.lesson) + '</p></div></div>';
-  }
-  V.match = (p) => {
-    const m = p[0] && D.match(p[0]);
-    if (!m) return empty('Match not found', 'This match id is not in the demo feed.', '<a class="btn" href="#/scanner">Open scanner</a>');
-    const t = now(), st = D.status(m, t), a = an(m), l = D.live(m, t);
-    const aiBet = S.bets.ai.find((b) => b.matchId === m.id); const uBets = S.bets.user.filter((b) => b.matchId === m.id);
-    const tabList = [['analysis', 'AI analysis'], ['stats', 'Form & stats'], ['team', 'Team news'], ['odds', 'Odds'], st !== 'upcoming' ? ['live', st === 'live' ? 'Live radar' : 'Match stats'] : null, aiBet && aiBet.review ? ['review', 'Post-match'] : null].filter(Boolean);
-    let tab = S.ui.matchTab[m.id] || (st === 'live' ? 'live' : 'analysis'); if (!tabList.some((x) => x[0] === tab)) tab = 'analysis';
-    const tb = m.ctx.table; const pos = (n) => { if (!tb) return ''; const r = tb.rows.find((x) => x.team === n); return r ? r.pos + ordinal(r.pos) + ' · ' + r.pts + ' pts' : ''; };
-    const side = (n, sub) => '<div class="mh-side"><span class="crest">' + esc(initials(n)) + '</span><b>' + esc(n) + '</b><small>' + esc(sub) + '</small></div>';
-    const head = '<div class="mh">' +
-      '<div class="mh-meta"><a href="#/scanner" class="back" aria-label="Back to scanner">' + icon('chevL') + '</a>' + sportTag(m.sport) + '<span>' + esc(m.league) + ' · ' + esc(m.country) + '</span><span class="dim">' + dateTime(m.start) + '</span>' + statusTag(m) + demoTag() + '</div>' +
-      '<div class="mh-teams">' + side(m.home, pos(m.home) || (['tennis', 'mma'].includes(m.sport) ? 'Rating ' + m.homeR : 'Home')) +
-      '<div class="mh-mid">' + (st === 'upcoming' ? '<span class="mh-time">' + time(m.start) + '</span><small>' + dayLabel(m.start) + '</small>' : '<span class="mh-score ' + (st === 'live' ? 'live' : '') + '">' + (l.h == null ? 'vs' : l.h + '<i>:</i>' + l.a) + '</span><small>' + esc(st === 'finished' ? D.scoreText(m) : l.label) + '</small>') + '</div>' +
-      side(m.away, pos(m.away) || (['tennis', 'mma'].includes(m.sport) ? 'Rating ' + m.awayR : 'Away')) + '</div>' +
-      '<div class="mh-sum">' + (st !== 'finished' ? '<span><i>Best estimate</i><b>' + esc(selText(a.best)) + ' @ ' + odds(a.best.odds) + '</b></span><span><i>Difference</i>' + valTag(a.best.value) + '</span><span><i>Confidence</i>' + confTag(a.best.conf) + '</span><span><i>Interest</i><b>' + a.interest + '</b></span>' : '') +
-      (aiBet ? '<button type="button" class="aib" data-act="ai-bet" data-id="' + aiBet.id + '">AI bet #' + aiBet.no + ': ' + esc(aiBet.selection) + ' ' + resTag(aiBet) + '</button>' : '') +
-      (uBets.length ? '<a class="aib" href="#/journal">Your bets: ' + uBets.length + '</a>' : '') + '</div></div>';
-    let body;
-    if (tab === 'stats') body = statsTab(m);
-    else if (tab === 'team') body = teamTab(m);
-    else if (tab === 'odds') body = oddsTab(m);
-    else if (tab === 'live') body = '<div class="grid">' + panel(null, radar(m, true), { cls: 'c12', flush: true }) + '</div>';
-    else if (tab === 'review') body = '<div class="grid">' + panel('Post-match analysis <small>AI bet #' + aiBet.no + '</small>', reviewHtml(aiBet), { cls: 'c12' }) + '</div>';
-    else body = matchAnalysisTab(m, a);
-    return head + tabs('mtab', tabList, tab, 'mtabs') + '<div class="mt-body" data-mid="' + esc(m.id) + '">' + body + '</div>';
-  };
-  const ordinal = (n) => (n % 100 >= 11 && n % 100 <= 13 ? 'th' : ['th', 'st', 'nd', 'rd'][n % 10] || 'th');
-  on('mtab', (el) => { const id = document.querySelector('.mt-body').dataset.mid; S.ui.matchTab[id] = el.dataset.v; save(); rerender(); });
-  on('msel', (el) => { S.ui.matchSel[el.dataset.id] = el.dataset.v; save(); rerender(); });
-  on('mk-pick', (el) => { const [id, k] = el.dataset.v.split('|'); S.ui.matchSel[id] = k + '|'; save(); rerender(); });
-  document.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.matches && e.target.matches('tr.clk')) e.target.click(); });
-
-  /* ---------------- OPPORTUNITIES + VALUE FINDER ---------------- */
-  V.opportunities = () => {
-    const all = opportunities(); const tab = S.ui.oppTab;
-    const cnt = (c) => all.filter((x) => x.a.categories.includes(c)).length;
-    const tabList = [['all', 'All', all.length], ['interesting', 'Interesting', cnt('interesting')], ['signal', 'Statistical signal', cnt('signal')], ['discrepancy', 'Model-market discrepancy', cnt('discrepancy')], ['confidence', 'High confidence', cnt('confidence')], ['variance', 'High variance', cnt('variance')], ['live', 'Live', cnt('live')], ['value', 'Value finder', null]];
-    let body;
-    if (tab === 'value') {
-      const min = +S.ui.vfMin / 100;
-      const rows = windowMatches().flatMap((m) => an(m).markets.flatMap((mk) => mk.sels.map((s) => ({ m, s })))).filter((x) => x.s.value >= min);
-      body = note('Potential statistical value: selections where the model probability exceeds the implied probability. A positive difference is an internal estimate and is never guaranteed. Most rows will still lose.', 'warn') +
-        '<div class="toolbar">' + seg('vf-min', [['1', '1+ pp'], ['2', '2+ pp'], ['3', '3+ pp'], ['5', '5+ pp']], S.ui.vfMin) + '<span class="dim">' + rows.length + ' selection(s) in the next 36h</span></div>' +
-        panel(null, table('vf', [
-          { k: 'match', l: 'Match', f: (r) => '<a href="' + mlink(r.m) + '" class="tl">' + sportTag(r.m.sport) + '<span><b>' + esc(r.m.home) + ' vs ' + esc(r.m.away) + '</b><small>' + esc(r.m.league) + ' · ' + dateTime(r.m.start) + '</small></span></a>', v: (r) => r.m.start },
-          { k: 'sel', l: 'Selection', f: (r) => esc(selText(r.s)) + '<br><small class="dim">' + esc(r.s.mkName) + '</small>' },
-          { k: 'odds', l: 'Odds', num: true, f: (r) => odds(r.s.odds), v: (r) => r.s.odds },
-          { k: 'model', l: 'Model', num: true, f: (r) => pct(r.s.model), v: (r) => r.s.model },
-          { k: 'imp', l: 'Implied', num: true, f: (r) => pct(r.s.implied), v: (r) => r.s.implied },
-          { k: 'val', l: 'Diff.', num: true, f: (r) => valTag(r.s.value), v: (r) => r.s.value },
-          { k: 'ev', l: 'EV', num: true, f: (r) => signed(r.s.ev * 100) + '%', v: (r) => r.s.ev },
-          { k: 'conf', l: 'Conf.', num: true, f: (r) => confTag(r.s.conf), v: (r) => r.s.conf.value },
-          { k: 'risk', l: 'Risk', f: (r) => riskTag(r.s.risk.level), v: (r) => r.s.risk.score }
-        ], rows, { sort: { col: 'val', dir: 'desc' }, empty: 'No selection reaches this threshold.' }), { flush: true });
+  function tabStats(m) {
+    const c = m.ctx; let out = '';
+    out += '<div class="two">' + sec('Форма: ' + esc(m.home), formTable(c.formH, m.sport)) + sec('Форма: ' + esc(m.away), formTable(c.formA, m.sport)) + '</div>';
+    out += sec('Очні зустрічі', c.h2h.length ? '<table class="tbl"><tbody>' + c.h2h.map((g) => '<tr><td class="muted">' + g.y + '</td><td>' + esc(m.home) + '</td><td class="c b">' + g.hs + ':' + g.as + '</td><td>' + esc(m.away) + '</td></tr>').join('') + '</tbody></table>' + (c.h2h.length < 3 ? note('Мала вибірка. За ' + c.h2h.length + ' ' + plural(c.h2h.length, ['зустріччю', 'зустрічами', 'зустрічами']) + ' висновків робити не варто.', 'warn') : '') : '<p class="muted">Раніше не зустрічалися, або даних немає.</p>');
+    if (m.sport === 'football') {
+      const inj = (side) => { const l = c.inj[side]; return l.length ? '<ul class="inj">' + l.map((p) => '<li><span class="b ' + (p.status === 'out' ? 'b-lost' : 'b-medium') + '">' + (p.status === 'out' ? 'Не зіграє' : 'Під питанням') + '</span><div><b>' + esc(p.name) + '</b>, ' + esc(p.role) + '<small>' + esc(p.reason) + '. Частка внеску ' + p.contrib + '% (демо).</small></div></li>').join('') + '</ul>' : '<p class="muted">Втрат немає.</p>'; };
+      out += sec('Травми', '<div class="two"><div><h4>' + esc(m.home) + '</h4>' + inj('home') + '</div><div><h4>' + esc(m.away) + '</h4>' + inj('away') + '</div></div>');
+      out += sec('Склади', c.lineups ? '<div class="two">' + ['home', 'away'].map((sd) => '<div><h4>' + esc(sd === 'home' ? m.home : m.away) + '</h4><ol class="xi">' + c.lineups[sd].map((p) => '<li>' + esc(p) + '</li>').join('') + '</ol></div>').join('') + '</div><p class="fine">Прогноз складу з демо-фіду, імена гравців вигадані.</p>' : '<p class="muted">Склади ще не оголошені. Зазвичай їх публікують приблизно за годину до початку.</p>');
+      out += sec('Відпочинок', '<p>' + esc(m.home) + ': ' + c.restH + ' дн. після попереднього матчу. ' + esc(m.away) + ': ' + c.restA + ' дн.</p>');
+    } else if (m.sport === 'tennis') {
+      const F = c.fatigue;
+      out += sec('Втома', '<p>' + esc(m.home) + ': попередній матч тривав ' + F.lastH + ' хв, відпочинок ' + F.restH + ' дн.<br>' + esc(m.away) + ': ' + F.lastA + ' хв, відпочинок ' + F.restA + ' дн.</p>' + (F.lastH > 150 || F.lastA > 150 ? note('Довгий попередній матч підвищує ризик втоми, особливо в третьому сеті.', 'warn') : ''));
+      out += sec('Покриття', '<p class="muted">Недостатньо даних. Результати на різних покриттях не входять у демо-фід.</p>');
     } else {
-      const list = (tab === 'all' ? all : all.filter((x) => x.a.categories.includes(tab))).sort((x, y) => y.a.interest - x.a.interest);
-      body = (tab !== 'all' ? note('<b>' + CAT[tab][0] + ':</b> ' + esc(CAT[tab][1])) : '') +
-        (list.length ? '<div class="opp-grid wide">' + list.map((x) => oppCard(x, { why: true })).join('') + '</div>' : empty('Nothing in this category right now', 'Categories update as prices, news and match states change.'));
-    }
-    return pageHead('Opportunities', 'Model-market discrepancies and statistical signals for the next 36 hours. Not tips, not guarantees. ' + demoTag()) + tabs('opp-tab', tabList, tab, 'hscroll') + body;
-  };
-  on('opp-tab', (el) => { S.ui.oppTab = el.dataset.v; save(); rerender(); });
-  on('vf-min', (el) => { S.ui.vfMin = el.dataset.v; save(); rerender(); });
-
-  /* ---------------- LIVE RADAR ---------------- */
-  const clockBtns = () => '<div class="clock-ctl"><span class="dim">Demo clock</span>' + [['15', '+15m'], ['60', '+1h'], ['360', '+6h']].map(([v, l]) => '<button type="button" class="btn btn-sm" data-act="clock" data-v="' + v + '">' + icon('ff') + l + '</button>').join('') + (SIT.clock.offset ? '<button type="button" class="btn btn-sm btn-ghost" data-act="clock" data-v="reset">Reset</button>' : '') + '</div>';
-  V.live = () => {
-    const t = now(); const td = todayStr(); const sp = S.ui.liveSport || 'all';
-    const all = D.matchesInRange(U.addDays(td, -1), 2);
-    const live = all.filter((m) => D.status(m, t) === 'live');
-    const shown = live.filter((m) => sp === 'all' || m.sport === sp);
-    const recent = all.filter((m) => D.status(m, t) === 'finished' && t - (m.start + m.dur * 60000) < 3 * 3600e3).slice(-8).reverse();
-    const next = all.filter((m) => D.status(m, t) === 'upcoming').slice(0, 5);
-    const cnt = {}; live.forEach((m) => (cnt[m.sport] = (cnt[m.sport] || 0) + 1));
-    return pageHead('Live radar', 'In-play scores, stats, momentum and price movement. Updates every 20 seconds. ' + demoTag(), clockBtns()) +
-      '<div class="chips hscroll">' + chip('live-sport', 'all', 'All <em>' + live.length + '</em>', sp === 'all') + Object.values(D.SPORTS).filter((x) => cnt[x.id]).map((x) => chip('live-sport', x.id, esc(x.name) + ' <em>' + cnt[x.id] + '</em>', sp === x.id)).join('') + '</div>' +
-      (shown.length ? '<div class="radar-grid">' + shown.map((m) => radar(m, false)).join('') + '</div>' : empty('Nothing live right now', 'Fast-forward the demo clock or check upcoming events below.')) +
-      '<div class="grid mt">' + panel('Recently finished', recent.length ? '<div class="mlist">' + recent.map((m) => matchRow(m, { league: true, noAn: true })).join('') + '</div>' : empty('Nothing finished in the last 3 hours', ''), { cls: 'c6', flush: true }) +
-      panel('Starting next', next.length ? '<div class="mlist">' + next.map((m) => matchRow(m, { league: true })).join('') + '</div>' : empty('No upcoming events', ''), { cls: 'c6', flush: true }) + '</div>';
-  };
-  on('live-sport', (el) => { S.ui.liveSport = el.dataset.v; save(); rerender(); });
-  on('clock', (el) => {
-    const v = el.dataset.v;
-    S.settings.clockOffset = v === 'reset' ? 0 : (S.settings.clockOffset || 0) + Number(v) * 60000;
-    SIT.clock.offset = S.settings.clockOffset; E.clearCache();
-    const n = A.settleAll(false); save();
-    toast(v === 'reset' ? 'Demo clock reset to real time.' : 'Demo clock moved forward ' + (v >= 60 ? v / 60 + 'h' : v + 'm') + (n ? '. ' + n + ' bet(s) settled.' : '.'));
-    rerender();
-  });
-
-  /* ---------------- NEWS ---------------- */
-  V.news = () => {
-    const t = now(), td = todayStr(); const fs = S.ui.newsSport, fi = S.ui.newsImpact;
-    const seen = new Set();
-    let list = D.news(td).concat(D.news(U.addDays(td, -1)), D.news(U.addDays(td, -2))).filter((n) => n.time <= t && !seen.has(n.id) && seen.add(n.id));
-    const total = list.length;
-    if (fs !== 'all') list = list.filter((n) => n.sport === fs);
-    if (fi !== 'all') list = list.filter((n) => n.impact === fi);
-    list.sort((a, b) => b.time - a.time);
-    const upd = (k) => (v) => { S.ui[k] = v; save(); rerender(); };
-    return pageHead('Sports news', 'Facts and interpretation are kept apart. "Why it matters" is an AI interpretation labelled as such. ' + demoTag()) +
-      '<div class="filters">' + dd('news-sport', [{ v: 'all', l: 'All sports' }].concat(Object.values(D.SPORTS).map((s) => ({ v: s.id, l: s.name }))), fs, upd('newsSport'), { label: 'Sport' }) +
-      dd('news-impact', [['all', 'Any impact'], ['HIGH', 'High'], ['MEDIUM', 'Medium'], ['LOW', 'Low']].map(([v, l]) => ({ v, l })), fi, upd('newsImpact'), { label: 'Impact' }) +
-      '<span class="dim">' + list.length + ' of ' + total + ' items, last 3 days</span></div>' +
-      (list.length ? '<div class="news-l cols">' + list.map((n) => newsCard(n)).join('') + '</div>' : empty('No news for these filters', 'Try another sport or impact level.'));
-  };
-
-  /* ---------------- ANALYTICS (global + You vs AI) ---------------- */
-  const mGroup = (b) => (['1X2', 'ML'].includes(b.marketKey) ? 'Result / winner' : b.marketKey === 'OU' ? 'Totals' : b.marketKey === 'BTTS' ? 'BTTS' : 'Other');
-  function filterBets(f) {
-    let bets = f.src === 'ai' ? S.bets.ai : f.src === 'user' ? S.bets.user : S.bets.ai.concat(S.bets.user);
-    bets = rangeFilter(bets, f.range);
-    if (f.sport !== 'all') bets = bets.filter((b) => b.sport === f.sport);
-    if (f.league !== 'all') bets = bets.filter((b) => b.league === f.league);
-    if (f.market !== 'all') bets = bets.filter((b) => mGroup(b) === f.market);
-    if (f.odds !== 'all') bets = bets.filter((b) => oddsBucket(b.odds) === f.odds);
-    if (f.result !== 'all') bets = bets.filter((b) => b.status === f.result);
-    return bets;
-  }
-  function sampleNote(n) {
-    if (n < 30) return note('Small sample: ' + n + ' settled bet(s). At this size results are dominated by variance. Do not draw conclusions.', 'warn');
-    if (n < 100) return note('Moderate sample: ' + n + ' settled bets. ROI can still swing by several points either way.', '');
-    return '';
-  }
-  const grpCols = (label) => [
-    { k: 'key', l: label, f: (r) => '<b>' + esc(r.key) + '</b>' + (r.decided < 10 ? ' <span class="lown-t" data-tip="Fewer than 10 settled bets">low n</span>' : ''), v: (r) => r.key },
-    { k: 'n', l: 'Bets', num: true, f: (r) => r.n, v: (r) => r.n },
-    { k: 'wl', l: 'W-L', num: true, f: (r) => r.wins + '-' + r.losses },
-    { k: 'wr', l: 'Win %', num: true, f: (r) => pct(r.winRate), v: (r) => r.winRate || 0 },
-    { k: 'ao', l: 'Avg odds', num: true, f: (r) => odds(r.avgOdds), v: (r) => r.avgOdds || 0 },
-    { k: 'pl', l: 'P/L', num: true, f: (r) => '<span class="' + plClass(r.pl) + '">' + money(r.pl, true) + '</span>', v: (r) => r.pl },
-    { k: 'roi', l: 'ROI', num: true, f: (r) => '<span class="' + plClass(r.roi || 0) + '">' + pct(r.roi) + '</span>', v: (r) => r.roi || 0 }
-  ];
-  function dailyGrowth(owner, days) {
-    const start = owner === 'ai' ? S.ai.startingBankroll : S.user.startingBankroll; const td = todayStr();
-    const settled = S.bets[owner].filter((b) => b.status !== 'pending' && b.settledAt).sort((a, b) => a.settledAt - b.settledAt);
-    const out = []; let i = 0, cum = 0;
-    const from = U.addDays(td, -days);
-    settled.forEach((b) => { if (b.settledAt < U.parseDate(from).getTime()) cum += b.pl; });
-    const base = start + cum;
-    while (i < settled.length && settled[i].settledAt < U.parseDate(from).getTime()) i++;
-    let c2 = 0;
-    for (let d = days; d >= 0; d--) {
-      const end = U.parseDate(U.addDays(td, -d + 1)).getTime();
-      while (i < settled.length && settled[i].settledAt < end) { c2 += settled[i].pl; i++; }
-      out.push({ label: fmtD(end - 1), v: base ? (c2 / base) * 100 : 0 });
+      const E = c.esp;
+      out += sec('Склади', '<div class="two">' + [[m.home, E.rosterH, 'home'], [m.away, E.rosterA, 'away']].map(([n, r, sd]) => '<div><h4>' + esc(n) + '</h4><div class="nicks">' + r.map((x, i) => '<span class="nick' + (E.standIn === sd && i === 0 ? ' out' : '') + '">' + esc(x) + (E.standIn === sd && i === 0 ? ' (не зіграє)' : '') + '</span>').join('') + '</div></div>').join('') + '</div>');
+      out += sec('Карти', E.pool ? '<p>Ймовірний пул: ' + E.pool.join(', ') + '.</p><p>' + (E.mapAdv ? esc(E.mapAdv > 0 ? m.home : m.away) + ' мають кращу статистику на цих картах (демо).' : 'Помітної переваги на картах немає.') + '</p>' : '<p class="muted">Для ' + esc(m.game) + ' карти не мають значення. Вплив останнього патча оцінити неможливо.</p>');
     }
     return out;
   }
-  V.analytics = () => {
-    const f = S.analytics; const tab = f.tab || 'global';
-    const head = pageHead('Analytics', 'Performance of your bets and the AI paper account. Every view states its sample size. ' + demoTag()) + tabs('an-tab', [['global', 'Global analytics'], ['compare', 'You vs AI']], tab);
-    if (tab === 'compare') return head + compareView();
-    const upd = (k) => (v) => { f[k] = v; save(); rerender(); };
-    const allB = S.bets.ai.concat(S.bets.user);
-    const leagues = [...new Set(allB.map((b) => b.league))].sort();
-    const bets = filterBets(f);
-    const start = f.src === 'ai' ? S.ai.startingBankroll : f.src === 'user' ? S.user.startingBankroll : S.ai.startingBankroll + S.user.startingBankroll;
-    const st = stats(bets, start);
-    const lastRoll = st.rolling.length >= 20 ? st.rolling[st.rolling.length - 1] : null;
-    const trend = lastRoll == null ? '<span class="dim">n/a</span>' : '<span class="' + plClass(lastRoll - (st.roi || 0)) + '">' + (lastRoll > (st.roi || 0) + 0.01 ? 'Improving' : lastRoll < (st.roi || 0) - 0.01 ? 'Declining' : 'Flat') + '</span>';
-    const filters = '<div class="filters">' + seg('an-range', RANGES, f.range) +
-      dd('an-src', [['all', 'You + AI'], ['ai', 'AI only'], ['user', 'You only']].map(([v, l]) => ({ v, l })), f.src, upd('src'), { label: 'Account' }) +
-      dd('an-sport', [{ v: 'all', l: 'All sports' }].concat(Object.values(D.SPORTS).map((s) => ({ v: s.id, l: s.name, n: allB.filter((b) => b.sport === s.id).length }))), f.sport, upd('sport'), { label: 'Sport' }) +
-      dd('an-league', [{ v: 'all', l: 'All leagues' }].concat(leagues.map((l) => ({ v: l, l }))), f.league, upd('league'), { label: 'League' }) +
-      dd('an-market', ['all', 'Result / winner', 'Totals', 'BTTS', 'Other'].map((v) => ({ v, l: v === 'all' ? 'All markets' : v })), f.market, upd('market'), { label: 'Market' }) +
-      dd('an-odds', [{ v: 'all', l: 'Any odds' }].concat(ODDS_BUCKETS.map((b) => ({ v: b[0], l: 'Odds ' + b[0] }))), f.odds, upd('odds'), { label: 'Odds range' }) +
-      dd('an-result', [['all', 'Any result'], ['won', 'Won'], ['lost', 'Lost'], ['void', 'Void'], ['pending', 'Pending']].map(([v, l]) => ({ v, l })), f.result, upd('result'), { label: 'Result' }) +
-      '<button type="button" class="btn btn-ghost btn-sm" data-act="an-reset">Reset</button></div>';
-    const kp = '<div class="kg k8">' + kpi('ROI', '<span class="' + plClass(st.roi || 0) + '">' + pct(st.roi) + '</span>', money(st.staked) + ' staked') + kpi('Win rate', pct(st.winRate), st.wins + 'W ' + st.losses + 'L') + kpi('P/L', '<span class="' + plClass(st.pl) + '">' + money(st.pl, true) + '</span>', '') + kpi('Avg odds', odds(st.avgOdds), '') +
-      kpi('Sample size', String(st.decided), st.n + ' total · ' + st.pending + ' pending') + kpi('Max drawdown', money(st.maxDD), pct(st.maxDDPct) + ' of peak') + kpi('Trend', trend, lastRoll == null ? 'needs 20+ bets' : 'last 20: ' + pct(lastRoll), '', 'Rolling ROI of the last 20 settled bets compared with the overall ROI.') + kpi('Avg stake', st.avgStake ? money(st.avgStake) : '-', '') + '</div>';
-    const cum = st.series;
-    const ch = chart('line', { series: [{ name: 'Cumulative P/L', values: cum.map((p) => p.cum), color: 'var(--signal)' }], labels: cum.map((p) => fmtD(p.t)), yFmt: (v) => money(v), zero: true, area: true, height: 220 });
-    const roll = chart('line', { series: [{ name: 'Rolling ROI (20)', values: st.rolling.map((v) => v * 100), color: 'var(--info)' }], labels: st.rolling.map((_, i) => '#' + (i + 1)), yFmt: (v) => v.toFixed(0) + '%', zero: true, height: 220 });
-    const g = (fn, label, id) => panel('By ' + label.toLowerCase(), table(id, grpCols(label), groupStats(bets, fn), { sort: { col: 'n', dir: 'desc' } }), { cls: 'c6', flush: true });
-    return head + filters + sampleNote(st.decided) + kp +
-      '<div class="grid mt">' + panel('Cumulative P/L', ch, { cls: 'c7' }) + panel('Rolling ROI <small>last 20 settled bets</small>', roll, { cls: 'c5' }) +
-      g((b) => D.SPORTS[b.sport] ? D.SPORTS[b.sport].name : b.sport, 'Sport', 'an-sp') + g(mGroup, 'Market', 'an-mk') + g((b) => oddsBucket(b.odds), 'Odds range', 'an-od') + g((b) => b.league, 'League', 'an-lg') + '</div>';
-  };
-  function compareView() {
-    const range = S.analytics.range; const days = { '7D': 7, '30D': 30, '90D': 90 }[range] || A.HISTORY_DAYS;
-    const ub = rangeFilter(S.bets.user, range), ab = rangeFilter(S.bets.ai, range);
-    const us = stats(ub, S.user.startingBankroll), as = stats(ab, S.ai.startingBankroll);
-    const perWeek = (bets) => (bets.length / Math.max(1, days / 7)).toFixed(1);
-    const row = (l, u, a, tip) => '<tr><td' + (tip ? ' data-tip="' + esc(tip) + '"' : '') + '>' + l + '</td><td class="num">' + u + '</td><td class="num">' + a + '</td></tr>';
-    const c = (v, f) => '<span class="' + plClass(v || 0) + '">' + f + '</span>';
-    const ai = new Map(S.bets.ai.map((b) => [b.matchId, b]));
-    const overlap = S.bets.user.filter((b) => b.matchId && ai.has(b.matchId)); const same = overlap.filter((b) => ai.get(b.matchId).selKey === b.selKey && ai.get(b.matchId).marketKey === b.marketKey);
-    const tbl = '<div class="tw"><table class="tbl cmp"><thead><tr><th>Metric</th><th class="num">You</th><th class="num">AI Analyst</th></tr></thead><tbody>' +
-      row('Starting bankroll', money(S.user.startingBankroll), money(S.ai.startingBankroll)) + row('Current bankroll', money(bankroll('user')), money(bankroll('ai'))) +
-      row('Bets in period', ub.length, ab.length) + row('Settled', us.decided, as.decided) + row('Bets per week', perWeek(ub), perWeek(ab)) +
-      row('Win rate', pct(us.winRate), pct(as.winRate)) + row('ROI', c(us.roi, pct(us.roi)), c(as.roi, pct(as.roi))) + row('P/L', c(us.pl, money(us.pl, true)), c(as.pl, money(as.pl, true))) +
-      row('P/L as % of start', c(us.pl, pct(us.pl / S.user.startingBankroll)), c(as.pl, pct(as.pl / S.ai.startingBankroll)), 'Normalises for different bankroll sizes') +
-      row('Average odds', odds(us.avgOdds), odds(as.avgOdds)) + row('Average stake', us.avgStake ? money(us.avgStake) : '-', as.avgStake ? money(as.avgStake) : '-') +
-      row('Largest win', money(us.largestWin), money(as.largestWin)) + row('Largest loss', money(us.largestLoss), money(as.largestLoss)) +
-      row('Max drawdown', money(us.maxDD) + ' <small>' + pct(us.maxDDPct) + '</small>', money(as.maxDD) + ' <small>' + pct(as.maxDDPct) + '</small>') +
-      row('Longest win streak', us.maxWin, as.maxWin) + row('Longest losing streak', us.maxLoss, as.maxLoss) + '</tbody></table></div>';
-    const gu = dailyGrowth('user', days), ga = dailyGrowth('ai', days);
-    const ch = chart('line', { series: [{ name: 'You', values: gu.map((p) => p.v), color: 'var(--info)' }, { name: 'AI', values: ga.map((p) => p.v), color: 'var(--signal)' }], labels: gu.map((p) => p.label), yFmt: (v) => v.toFixed(1) + '%', zero: true, height: 240 });
-    return '<div class="toolbar">' + seg('an-range', RANGES, range) + '</div>' +
-      note('Objective comparison only. Different numbers of bets, stake sizes and markets limit how directly these figures compare, and no winner is declared. Samples under 30 settled bets are mostly noise.', '') +
-      '<div class="grid mt">' + panel('Side by side', tbl, { cls: 'c6', flush: true }) +
-      panel('Bankroll change <small>% of bankroll at period start</small>', ch + legend([['You', 'var(--info)'], ['AI Analyst', 'var(--signal)']]), { cls: 'c6' }) +
-      panel('Overlap', '<div class="kg k3">' + kpi('Shared matches', String(overlap.length), 'you and the AI both bet') + kpi('Same selection', String(same.length), 'identical market and pick') + kpi('Different selection', String(overlap.length - same.length), 'opposite or other market') + '</div>', { cls: 'c12' }) + '</div>';
+  function moveExplain(m, s, mv) {
+    if (Math.abs(mv) < 0.03) return 'Коефіцієнт майже не змінювався. Пояснювати нічого.';
+    const shorten = mv < 0;
+    const n = D.newsForMatch(m).find((x) => x.side && (s.key === x.side ? !shorten : (s.key === 'home' || s.key === 'away') && shorten));
+    if (n) return 'Можливе пояснення: новина «' + n.title + '» (' + ago(n.time) + '). Час і напрям збігаються, але причинний зв’язок не підтверджений.';
+    return 'Можливе пояснення: недостатньо даних. Новин, що пояснюють ' + (shorten ? 'падіння' : 'зростання') + ' коефіцієнта, немає. Це може бути обсяг ставок або інформація, якої немає в демо-фіді.';
   }
-  on('an-tab', (el) => { S.analytics.tab = el.dataset.v; save(); rerender(); });
-  on('an-range', (el) => { S.analytics.range = el.dataset.v; save(); rerender(); });
-  on('an-reset', () => { const tab = S.analytics.tab; S.analytics = A.defaultState().analytics; S.analytics.tab = tab; save(); rerender(); });
-
-  /* ---------------- AI ANALYST (performance) ---------------- */
-  const CAL = [[0, 0.35, '<35%'], [0.35, 0.45, '35-45%'], [0.45, 0.55, '45-55%'], [0.55, 0.65, '55-65%'], [0.65, 1.01, '65%+']];
-  V.ai = () => {
-    const range = S.ui.aiRange; const bets = rangeFilter(S.bets.ai, range);
-    const from = range === 'ALL' ? 0 : now() - ({ '7D': 7, '30D': 30, '90D': 90 }[range]) * DAY;
-    const startBank = S.ai.startingBankroll + S.bets.ai.filter((b) => b.status !== 'pending' && b.settledAt < from && b.placedAt < from).reduce((a, b) => a + b.pl, 0);
-    const st = stats(bets, startBank); const P = E.CONFIG.profiles[S.settings.risk];
-    const bk = bankroll('ai');
-    const kp = '<div class="kg k6">' +
-      kpi('Starting bankroll', money(S.ai.startingBankroll), range === 'ALL' ? 'virtual' : money(startBank) + ' at period start') + kpi('Current bankroll', '<span class="' + plClass(bk - S.ai.startingBankroll) + '">' + money(bk) + '</span>', money(bk - S.ai.startingBankroll, true) + ' all time') +
-      kpi('Total bets', String(st.n), st.pending + ' pending') + kpi('Wins', '<span class="pos">' + st.wins + '</span>', '') + kpi('Losses', '<span class="neg">' + st.losses + '</span>', st.voids ? st.voids + ' void' : '') + kpi('Pending', String(st.pending), '') +
-      kpi('Win rate', pct(st.winRate), st.decided + ' settled') + kpi('ROI', '<span class="' + plClass(st.roi || 0) + '">' + pct(st.roi) + '</span>', money(st.staked) + ' staked') + kpi('Profit / loss', '<span class="' + plClass(st.pl) + '">' + money(st.pl, true) + '</span>', '') +
-      kpi('Average odds', odds(st.avgOdds), '') + kpi('Average stake', st.avgStake ? money(st.avgStake) : '-', st.avgStake ? pct(st.avgStake / bk) + ' of bankroll' : '') + kpi('Largest win', '<span class="pos">' + money(st.largestWin, true) + '</span>', '') +
-      kpi('Largest loss', '<span class="neg">' + money(st.largestLoss) + '</span>', '') + kpi('Current streak', '<span class="' + (st.streakType === 'won' ? 'pos' : st.streakType === 'lost' ? 'neg' : '') + '">' + st.streak + '</span>', '') + kpi('Longest win streak', 'W' + st.maxWin, '') +
-      kpi('Longest losing streak', 'L' + st.maxLoss, '') + kpi('Max drawdown', '<span class="neg">' + money(st.maxDD) + '</span>', pct(st.maxDDPct) + ' from peak') + kpi('Current drawdown', money(st.curDD), '') + '</div>';
-    const ser = st.series; const labels = ser.map((p) => fmtD(p.t));
-    const bankCh = chart('line', { series: [{ name: 'Bankroll', values: ser.map((p) => p.bank), color: 'var(--signal)' }, { name: 'Start', values: ser.map(() => startBank), color: 'var(--dim)', dash: true }], labels, yFmt: (v) => money(v), area: true, height: 240 });
-    const cumCh = chart('line', { series: [{ name: 'Cumulative P/L', values: ser.map((p) => p.cum), color: 'var(--pos)' }], labels, yFmt: (v) => money(v), zero: true, height: 200 });
-    const roiCh = chart('line', { series: [{ name: 'ROI', values: ser.map((p) => p.roi * 100), color: 'var(--info)' }], labels, yFmt: (v) => v.toFixed(1) + '%', zero: true, height: 200 });
-    const dist = '<div class="dn-wrap">' + donut([{ v: st.wins, c: 'var(--pos)' }, { v: st.losses, c: 'var(--neg)' }, { v: st.voids, c: 'var(--dim)' }, { v: st.pending, c: 'var(--signal)' }], 132) +
-      '<div class="dn-c"><b>' + pct(st.winRate, 0) + '</b><small>win rate</small></div>' + legend([['Won ' + st.wins, 'var(--pos)'], ['Lost ' + st.losses, 'var(--neg)'], ['Void ' + st.voids, 'var(--dim)'], ['Pending ' + st.pending, 'var(--signal)']]) + '</div>';
-    const bySport = groupStats(bets, (b) => D.SPORTS[b.sport].name).map((r) => ({ l: r.key, v: r.pl, n: r.decided }));
-    const byMk = groupStats(bets, mGroup).map((r) => ({ l: r.key, v: r.pl, n: r.decided }));
-    const decided = bets.filter((b) => b.status === 'won' || b.status === 'lost');
-    const cal = CAL.map(([a, b, l]) => { const g = decided.filter((x) => x.modelProb >= a && x.modelProb < b); const w = g.filter((x) => x.status === 'won').length; return { l, n: g.length, model: g.length ? avg(g.map((x) => x.modelProb)) : null, imp: g.length ? avg(g.map((x) => x.impliedProb)) : null, act: g.length ? w / g.length : null }; });
-    const calT = '<div class="tw"><table class="tbl"><thead><tr><th>Model prob.</th><th class="num">Bets</th><th class="num">Avg model</th><th class="num">Avg implied</th><th class="num">Actual hit rate</th><th class="num">Gap</th></tr></thead><tbody>' +
-      cal.map((r) => '<tr class="' + (r.n < 10 ? 'lown' : '') + '"><td>' + r.l + '</td><td class="num">' + r.n + '</td><td class="num">' + pct(r.model) + '</td><td class="num">' + pct(r.imp) + '</td><td class="num"><b>' + pct(r.act) + '</b></td><td class="num">' + (r.n ? '<span class="' + plClass(r.act - r.model) + '">' + pp(r.act - r.model) + '</span>' : '-') + '</td></tr>').join('') + '</tbody></table></div><p class="dim small pad">A well calibrated model has actual hit rates close to its average estimate. Rows under 10 bets are greyed out.</p>';
-    const pend = S.bets.ai.filter((b) => b.status === 'pending').sort((a, b) => a.start - b.start);
-    const policy = '<div class="policy"><div class="kg k3">' + kpi('Profile', P.label, 'change in Settings') + kpi('Min. difference', P.minEdge + ' pp', 'model minus implied') + kpi('Min. confidence', String(P.minConf), 'out of 100') + kpi('Staking', Math.round(P.kelly * 100) + '% Kelly', 'cap ' + pct(P.cap) + ' of bankroll') + kpi('Max odds', odds(P.maxOdds), '') + kpi('Per scan', 'max ' + P.maxPerScan, 'exposure cap 15%') + '</div>' +
-      '<p class="dim small">Last scan ' + (S.ai.lastScan ? ago(S.ai.lastScan) : 'never') + '. ' + toggle('ai-auto', S.ai.autoScan, 'Auto-scan every 30 minutes') + '</p></div>';
-    return pageHead('AI Analyst', 'Virtual paper-trading account. Every bet, win and loss is recorded. No real money. ' + demoTag(), '<button type="button" class="btn btn-sig" data-act="ai-run">' + icon('zap') + 'Run AI scan</button>') +
-      '<div class="toolbar">' + seg('ai-range', RANGES, range) + '<a class="lnk" href="#/ai-journal">Open AI journal' + icon('chevR') + '</a></div>' + sampleNote(st.decided) + kp +
-      '<div class="grid mt">' + panel('Bankroll over time', bankCh, { cls: 'c8' }) + panel('Win / loss distribution', dist, { cls: 'c4' }) +
-      panel('Cumulative P/L', cumCh, { cls: 'c6' }) + panel('ROI over time', roiCh, { cls: 'c6' }) +
-      panel('P/L by sport', hbars(bySport, { fmt: (v) => money(v, true) }), { cls: 'c6' }) + panel('P/L by market', hbars(byMk, { fmt: (v) => money(v, true) }), { cls: 'c6' }) +
-      panel('By league', table('ai-lg', grpCols('League'), groupStats(bets, (b) => b.league), { sort: { col: 'n', dir: 'desc' } }), { cls: 'c6', flush: true }) +
-      panel('By odds range', table('ai-od', grpCols('Odds'), groupStats(bets, (b) => oddsBucket(b.odds)), { sort: { col: 'key', dir: 'asc' } }), { cls: 'c6', flush: true }) +
-      panel('Calibration', calT, { cls: 'c7', flush: true }) + panel('Staking policy', policy, { cls: 'c5' }) +
-      panel('Open positions <em class="cnt">' + pend.length + '</em>', pend.length ? betList(pend, 'ai') : empty('No open positions', 'Run a scan or wait for the next automatic scan.'), { cls: 'c12', flush: true }) + '</div>';
-  };
-  on('ai-range', (el) => { S.ui.aiRange = el.dataset.v; save(); rerender(); });
-  on('ai-auto', () => { S.ai.autoScan = !S.ai.autoScan; save(); rerender(); });
-
-  /* ---------------- bet lists + AI bet modal ---------------- */
-  function betList(bets, owner, o) {
-    o = o || {};
-    return '<div class="bets">' + bets.map((b) => '<div class="bet ' + b.status + '"' + (owner === 'ai' ? ' data-act="ai-bet" data-id="' + b.id + '" tabindex="0" role="button" aria-label="Open AI bet ' + b.no + '"' : '') + '>' +
-      '<span class="bt-no">' + (owner === 'ai' ? '#' + String(b.no).padStart(3, '0') : fmtD(b.placedAt)) + '</span>' +
-      '<span class="bt-m">' + (b.sport && D.SPORTS[b.sport] ? sportTag(b.sport) : '') + '<span><b>' + esc(b.match) + '</b><small>' + esc(b.league || '') + (b.league ? ' · ' : '') + (owner === 'ai' ? dateTime(b.placedAt) : esc(b.market || '')) + '</small></span></span>' +
-      '<span class="bt-s"><b>' + esc(b.selection) + '</b><small>' + esc(owner === 'ai' ? b.market : (b.matchId ? 'linked' : 'manual')) + '</small></span>' +
-      '<span class="bt-n"><i>Odds</i>' + odds(b.odds) + '</span><span class="bt-n"><i>Stake</i>' + money(b.stake) + '</span>' +
-      (owner === 'ai' ? '<span class="bt-n hide-s"><i>Diff.</i>' + valTag(b.value) + '</span><span class="bt-n hide-s"><i>Conf.</i>' + confTagRaw(b.confidence, b.confLevel) + '</span>' : '') +
-      '<span class="bt-r">' + resTag(b) + plCell(b) + '</span>' +
-      (o.actions ? '<span class="bt-a">' + o.actions(b) + '</span>' : '') + '</div>').join('') + '</div>';
+  function tabOdds(m, a) {
+    const mks = D.markets(m);
+    const table = '<div class="tw"><table class="tbl"><thead><tr><th>Варіант</th><th class="r">Відкриття</th><th class="r">Зараз</th><th class="r">Зміна</th><th class="r">Ринок</th><th class="r">Модель</th></tr></thead><tbody>' +
+      mks.map((MK) => '<tr class="sub"><td colspan="6">' + esc(MK.name) + '</td></tr>' + MK.sels.map((x) => { const mv = x.odds / x.open - 1; const ms = a.markets.find((y) => y.key === MK.key).sels.find((y) => y.key === x.key); return '<tr><td>' + esc(x.label) + '</td><td class="r">' + odds(x.open) + '</td><td class="r b">' + odds(x.odds) + '</td><td class="r ' + (mv < -0.005 ? 'pos' : mv > 0.005 ? 'neg' : 'muted') + '">' + (mv > 0 ? '+' : '') + num(mv * 100, 1) + '%</td><td class="r">' + pct(1 / x.odds) + '</td><td class="r acc">' + pct(ms.model) + '</td></tr>'; }).join('')).join('') + '</tbody></table></div><p class="fine">Зелений: коефіцієнт упав, ринок став впевненішим. Червоний: зріс.</p>';
+    const k = S.ui.oSel[m.id] || (a.best.mk + '|' + a.best.key); const [mk, sk] = k.split('|');
+    const MK = m.markets.find((x) => x.key === mk) || m.markets[0]; const sel = MK.sels.find((x) => x.key === sk) || MK.sels[0];
+    const t = Math.min(now(), m.start); const hist = sel.hist.filter((p) => p.t <= t);
+    const cur = D.markets(m).find((x) => x.key === MK.key).sels.find((x) => x.key === sel.key);
+    const mv = cur.odds / sel.open - 1;
+    const opts = m.markets.flatMap((X) => X.sels.map((y) => [X.key + '|' + y.key, X.name + ': ' + y.label]));
+    return sec('Коефіцієнти', table) +
+      sec('Рух коефіцієнта', '<div class="frow">' + '<label class="sel"><select data-ch="osel" data-id="' + esc(m.id) + '">' + opts.map(([v, l]) => '<option value="' + v + '"' + (v === MK.key + '|' + sel.key ? ' selected' : '') + '>' + esc(l) + '</option>').join('') + '</select></label><span class="muted">Відкриття ' + odds(sel.open) + ', зараз ' + odds(cur.odds) + ' (' + (mv > 0 ? '+' : '') + num(mv * 100, 1) + '%)</span></div>' +
+        (hist.length >= 2 ? lineChart({ series: [{ name: sel.label, values: hist.map((p) => p.o), color: '#2357e8' }], labels: hist.map((p) => { const d = Math.round((m.start - p.t) / H); return d <= 0 ? 'старт' : 'за ' + d + ' год'; }), fmt: (v) => odds(v), height: 220 }) : '<div class="chart-empty">Історія коефіцієнта з’явиться ближче до матчу.</div>') +
+        '<div class="explain"><b>Можливе пояснення</b><p>' + esc(moveExplain(m, sel, mv)) + '</p></div>');
   }
-  function betModal(id) {
-    const b = S.bets.ai.find((x) => x.id === id); if (!b) { toast('AI bet not found. It may have been reset.', 'neg'); return; }
-    const m = D.match(b.matchId);
-    const row = (l, v) => '<div class="kv"><span>' + l + '</span><b>' + v + '</b></div>';
-    const body = '<div class="bm">' +
-      '<div class="bm-h">' + sportTag(b.sport) + '<span>' + esc(b.league) + '</span>' + resTag(b) + demoTag('Paper bet') + '</div>' +
-      '<div class="bm-m"><a href="#/match/' + enc(b.matchId) + '" data-act="modal-close-go">' + esc(b.match) + '</a><small>' + dateTime(b.start) + (b.score ? ' · Final: ' + esc(b.score) : '') + '</small></div>' +
-      '<div class="bm-pick"><span>' + esc(b.market) + '</span><b>' + esc(b.selection) + '</b><em>@ ' + odds(b.odds) + '</em></div>' +
-      '<div class="kvs">' + row('Date placed', dateTime(b.placedAt)) + row('Sport', esc(D.SPORTS[b.sport].name)) + row('Tournament', esc(b.league)) + row('Stake', money(b.stake)) + row('Potential profit', money(b.potential, true)) +
-      row('Model probability', pct(b.modelProb)) + row('Implied probability', pct(b.impliedProb)) + row('Value (difference)', valTag(b.value)) + row('Expected value', signed(b.ev * 100) + '%') + row('Confidence', confTagRaw(b.confidence, b.confLevel)) + row('Model score', b.modelScore + '/100') + row('Risk', riskTag(b.riskLevel)) +
-      row('Result', resTag(b)) + row('Profit / loss', b.status === 'pending' ? '<span class="dim">open</span>' : '<span class="' + plClass(b.pl) + '">' + money(b.pl, true) + '</span>') + row('Settled', b.settledAt ? dateTime(b.settledAt) : '-') + row('Timestamp', new Date(b.placedAt).toISOString().replace('T', ' ').slice(0, 19) + ' UTC') + '</div>' +
-      '<div class="sub-h">Reasoning</div><p class="reason">' + esc(b.reasoning) + '</p>' +
-      '<div class="sub-h">Factors</div>' + factorRows(b.factors) +
-      '<div class="two"><div><div class="sub-h pos">Positive factors</div>' + (b.positives.length ? bulletList(b.positives) : '<p class="dim">None of note.</p>') + '</div><div><div class="sub-h neg">Negative factors & risks</div>' + bulletList(b.negatives, 'against') + '</div></div>' +
-      '<div class="sub-h">Post-match analysis</div>' + reviewHtml(b) + '</div>';
-    openModal('AI BET #' + String(b.no).padStart(3, '0'), body, { wide: true, foot: (m ? '<a class="btn" href="#/match/' + enc(b.matchId) + '" data-act="modal-close-go">Open match</a>' : '') + '<button type="button" class="btn btn-sig" data-act="modal-close">Close</button>' });
+  onChange('osel', (el) => { S.ui.oSel[el.dataset.id] = el.value; rerender(); });
+  function liveFlags(m, l) {
+    const out = []; const mo = l.mom || [];
+    if (mo.length >= 6) { const r = mo.slice(-3).reduce((a, b) => a + b, 0) / 3, b = mo.slice(-6, -3).reduce((a, x) => a + x, 0) / 3; if (Math.sign(r) !== Math.sign(b) && Math.abs(r - b) > 0.45) out.push('Перелом: останнім часом перевага в ' + (r > 0 ? m.home : m.away) + '.'); }
+    if (l.h != null && l.h !== l.a) { const mk = m.markets[0]; const fav = mk.sels[0].close <= mk.sels[mk.sels.length - 1].close ? 'home' : 'away'; const lead = l.h > l.a ? 'home' : 'away'; if (lead !== fav) out.push('Несподіванка: веде андердог ' + (lead === 'home' ? m.home : m.away) + '.'); }
+    return out;
   }
-  on('ai-bet', (el) => betModal(el.dataset.id));
-  on('modal-close-go', (el, e) => { e.preventDefault(); closeModal(true); location.hash = el.getAttribute('href'); });
-  document.addEventListener('keydown', (e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target.matches && e.target.matches('.bet[data-act]')) { e.preventDefault(); e.target.click(); } });
-
-  /* ---------------- AI JOURNAL ---------------- */
-  V['ai-journal'] = (p) => {
-    const f = S.ui.aiJ; const q = f.q.trim().toLowerCase();
-    let list = S.bets.ai.filter((b) => (f.status === 'all' || b.status === f.status) && (f.sport === 'all' || b.sport === f.sport) && (f.market === 'all' || mGroup(b) === f.market) && (!q || (b.match + ' ' + b.selection + ' ' + b.league).toLowerCase().includes(q)));
-    const key = { date: (b) => b.placedAt, odds: (b) => b.odds, stake: (b) => b.stake, pl: (b) => (b.status === 'pending' ? 0 : b.pl), value: (b) => b.value, conf: (b) => b.confidence }[f.sort] || ((b) => b.placedAt);
-    list.sort((a, b) => (key(a) - key(b)) * (f.dir === 'asc' ? 1 : -1));
-    const total = list.length; const st = stats(list, 0);
-    const upd = (k) => (v) => { f[k] = v; f.limit = 40; save(); rerender(); };
-    if (p && p[0]) setTimeout(() => betModal(p[0]), 0);
-    const sortBtns = '<div class="sortbar"><span class="dim">Sort</span>' + [['date', 'Date'], ['odds', 'Odds'], ['stake', 'Stake'], ['pl', 'P/L'], ['value', 'Difference'], ['conf', 'Confidence']].map(([k, l]) => '<button type="button" class="th-s ' + (f.sort === k ? 'on ' + f.dir : '') + '" data-act="aij-sort" data-v="' + k + '">' + l + icon('sort', 'th-ic') + '</button>').join('') + '</div>';
-    return pageHead('AI journal', 'Complete record of the AI paper account, including every loss. Select a bet for full reasoning and post-match analysis. ' + demoTag()) +
-      '<div class="filters"><div class="fsearch">' + icon('search') + '<input type="search" placeholder="Search match, selection, league" value="' + esc(f.q) + '" data-change="aij-q" aria-label="Search AI bets"></div>' +
-      dd('aij-status', [['all', 'All results'], ['pending', 'Pending'], ['won', 'Won'], ['lost', 'Lost'], ['void', 'Void']].map(([v, l]) => ({ v, l, n: v === 'all' ? S.bets.ai.length : S.bets.ai.filter((b) => b.status === v).length })), f.status, upd('status'), { label: 'Result' }) +
-      dd('aij-sport', [{ v: 'all', l: 'All sports' }].concat(Object.values(D.SPORTS).map((s) => ({ v: s.id, l: s.name, n: S.bets.ai.filter((b) => b.sport === s.id).length }))), f.sport, upd('sport'), { label: 'Sport' }) +
-      dd('aij-market', ['all', 'Result / winner', 'Totals', 'BTTS'].map((v) => ({ v, l: v === 'all' ? 'All markets' : v })), f.market, upd('market'), { label: 'Market' }) + '</div>' +
-      '<div class="jsum">' + total + ' bets · ' + st.wins + 'W ' + st.losses + 'L ' + st.pending + ' pending · P/L <b class="' + plClass(st.pl) + '">' + money(st.pl, true) + '</b> · ROI <b class="' + plClass(st.roi || 0) + '">' + pct(st.roi) + '</b></div>' +
-      panel(null, sortBtns + (list.length ? betList(list.slice(0, f.limit), 'ai') : empty('No AI bets match these filters', 'Clear the search or change filters.')) +
-        (total > f.limit ? '<div class="more-row"><button type="button" class="btn" data-act="aij-more">Show more (' + (total - f.limit) + ' left)</button></div>' : ''), { flush: true });
-  };
-  on('change:aij-q', (el) => { S.ui.aiJ.q = el.value; S.ui.aiJ.limit = 40; save(); rerender(); });
-  on('aij-more', () => { S.ui.aiJ.limit += 40; save(); rerender(); });
-  on('aij-sort', (el) => { const f = S.ui.aiJ; f.dir = f.sort === el.dataset.v && f.dir === 'desc' ? 'asc' : 'desc'; f.sort = el.dataset.v; save(); rerender(); });
-  document.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.matches && e.target.matches('[data-change="aij-q"]')) e.target.blur(); });
-
-  /* ---------------- BET JOURNAL (user) ---------------- */
-  let form = null;
-  const MARKETS = ['Match Result', 'Moneyline', 'Total Goals', 'Total Points', 'Both Teams To Score', 'Handicap', 'Player prop', 'Other'];
-  function calcPl(status, stake, o) { return status === 'won' ? round2(stake * (o - 1)) : status === 'lost' ? -stake : 0; }
-  function formHtml() {
-    const fv = (k) => esc(form[k] == null ? '' : form[k]);
-    const o = parseFloat(form.odds), s = parseFloat(form.stake);
-    const prev = o > 1 && s > 0 ? 'Potential profit ' + money(round2(s * (o - 1)), true) + ' · implied probability ' + pct(1 / o) : 'Enter odds and stake to see potential profit.';
-    return '<div class="form">' + (form.matchId ? note('Linked to a demo match. The result settles automatically when the match ends, unless you set it manually.') : '') +
-      '<label class="fl"><span>Match</span><input type="text" data-input="bf" data-k="match" value="' + fv('match') + '" placeholder="e.g. Arsenal vs Chelsea" ' + (form.matchId ? 'readonly' : 'autofocus') + '></label>' +
-      '<div class="frow"><div class="fl"><span>Sport</span>' + dd('bf-sport', Object.values(D.SPORTS).map((x) => ({ v: x.id, l: x.name })), form.sport, (v) => { form.sport = v; showForm(); }) + '</div>' +
-      '<label class="fl"><span>League / tournament</span><input type="text" data-input="bf" data-k="league" value="' + fv('league') + '" placeholder="optional"></label></div>' +
-      '<div class="frow"><div class="fl"><span>Market</span>' + dd('bf-market', MARKETS.concat(MARKETS.includes(form.market) || !form.market ? [] : [form.market]).map((x) => ({ v: x, l: x })), form.market || 'Match Result', (v) => { form.market = v; showForm(); }) + '</div>' +
-      '<label class="fl"><span>Selection</span><input type="text" data-input="bf" data-k="selection" value="' + fv('selection') + '" placeholder="e.g. Arsenal, Over 2.5"></label></div>' +
-      '<div class="frow f3"><label class="fl"><span>Odds</span><input type="number" inputmode="decimal" step="0.01" min="1.01" data-input="bf" data-k="odds" value="' + fv('odds') + '"></label>' +
-      '<label class="fl"><span>Stake (' + esc(S.settings.currency) + ')</span><input type="number" inputmode="decimal" step="0.5" min="0" data-input="bf" data-k="stake" value="' + fv('stake') + '"></label>' +
-      '<label class="fl"><span>Date</span><input type="date" data-input="bf" data-k="date" value="' + fv('date') + '"></label></div>' +
-      '<div class="fl"><span>Result</span>' + seg('bf-status', [['pending', 'Pending'], ['won', 'Won'], ['lost', 'Lost'], ['void', 'Void']], form.status) + '</div>' +
-      '<label class="fl"><span>Reasoning</span><textarea rows="3" data-input="bf" data-k="reasoning" placeholder="Why this bet? What would prove you wrong?">' + fv('reasoning') + '</textarea></label>' +
-      '<div class="bf-prev" id="bf-prev">' + prev + '</div><div class="bf-err" id="bf-err" role="alert"></div></div>';
+  function liveBlock(m, full) {
+    const l = D.live(m); const flags = liveFlags(m, l);
+    let body = '<div class="lv-score"><span>' + esc(m.home) + '</span><b>' + (l.h == null ? '-' : l.h + ':' + l.a) + '</b><span>' + esc(m.away) + '</span></div>' +
+      '<div class="lv-label">' + (l.status === 'live' ? '<span class="st-live"><i></i>' + esc(l.label) + '</span>' : esc(l.label || 'Ще не почався')) + (l.detail ? '<span class="muted">' + esc(l.detail) + '</span>' : '') + '</div>' +
+      '<div class="prog"><i style="width:' + Math.round(l.progress * 100) + '%"></i></div>';
+    if (full) {
+      if (l.stats) { const row = (lb, v, suf) => { const t = v[0] + v[1] || 1; return '<div class="sb"><b>' + v[0] + (suf || '') + '</b><span>' + lb + '</span><b>' + v[1] + (suf || '') + '</b><div class="sb-t"><i style="width:' + v[0] / t * 100 + '%"></i><i style="width:' + v[1] / t * 100 + '%"></i></div></div>'; }; body += '<div class="sbars">' + row('Удари', l.stats.shots) + row('У площину', l.stats.sot) + row('Володіння', l.stats.poss, '%') + row('Кутові', l.stats.corners) + row('Картки', l.stats.cards) + '</div>'; }
+      else body += '<p class="fine">Детальна статистика (' + (m.sport === 'tennis' ? 'подачі, ейси, брейкпойнти' : 'вбивства, економіка, раунди по гравцях') + ') у демо-фіді недоступна. Показуємо рахунок, хід матчу і перевагу.</p>';
+      if (m.sport === 'esports' && m.result.maps && l.status !== 'upcoming') body += '<table class="tbl"><tbody>' + m.result.maps.slice(0, l.h + l.a).map((x, i) => '<tr><td>Карта ' + (i + 1) + '</td><td>' + esc(x.name) + '</td><td class="r b">' + x.s[0] + ':' + x.s[1] + '</td></tr>').join('') + '</tbody></table>';
+      if (l.events && l.events.length) body += '<ul class="events">' + l.events.slice(-8).map((e) => '<li class="' + e.side + '"><b>' + e.min + '’</b>' + esc(e.type) + ', ' + esc(e.side === 'home' ? m.home : m.away) + '</li>').join('') + '</ul>';
+    }
+    body += '<div class="mom-w"><span class="muted small">Перевага: вгору ' + esc(m.home) + ', вниз ' + esc(m.away) + '</span>' + momBars(l.mom) + '</div>';
+    if (flags.length) body += '<div class="flags">' + flags.map((f) => '<span class="flag">' + icon('alert') + esc(f) + '</span>').join('') + '</div>';
+    return body;
   }
-  function showForm() { openModal(form.id ? 'Edit bet' : 'Add bet', formHtml(), { foot: '<button type="button" class="btn" data-act="modal-close">Cancel</button><button type="button" class="btn btn-sig" data-act="bf-save">' + icon('check') + 'Save bet</button>' }); }
-  function openBetForm(b, prefill) {
-    form = b ? { id: b.id, match: b.match, sport: b.sport || 'football', league: b.league || '', market: b.market || 'Match Result', selection: b.selection, odds: String(b.odds), stake: String(b.stake), date: U.dateStr(b.placedAt), reasoning: b.reasoning || '', status: b.status, matchId: b.matchId || null }
-      : Object.assign({ id: null, match: '', sport: 'football', league: '', market: 'Match Result', selection: '', odds: '', stake: '10', date: todayStr(), reasoning: '', status: 'pending', matchId: null }, prefill || {});
-    showForm();
-  }
-  on('input:bf', (el) => {
-    form[el.dataset.k] = el.value;
-    if (el.dataset.k === 'odds' || el.dataset.k === 'stake') { const o = parseFloat(form.odds), s = parseFloat(form.stake); const pv = document.getElementById('bf-prev'); if (pv) pv.textContent = o > 1 && s > 0 ? 'Potential profit ' + money(round2(s * (o - 1)), true) + ' · implied probability ' + pct(1 / o) : 'Enter odds and stake to see potential profit.'; }
-  });
-  on('bf-status', (el) => { form.status = el.dataset.v; el.parentElement.querySelectorAll('button').forEach((b) => { b.classList.toggle('on', b === el); b.setAttribute('aria-pressed', String(b === el)); }); });
-  on('bf-save', () => {
-    const err = document.getElementById('bf-err'); const o = parseFloat(form.odds), s = parseFloat(form.stake);
-    if (!form.match.trim()) return (err.textContent = 'Match is required.');
-    if (!form.selection.trim()) return (err.textContent = 'Selection is required.');
-    if (!(o >= 1.01)) return (err.textContent = 'Odds must be at least 1.01 (decimal format).');
-    if (!(s > 0)) return (err.textContent = 'Stake must be greater than zero.');
-    const t = now(); const placed = form.date === todayStr() ? t : U.parseDate(form.date || todayStr()).getTime() + 12 * 3600e3;
-    let b = form.id ? S.bets.user.find((x) => x.id === form.id) : null;
-    const prevStatus = b ? b.status : null;
-    if (!b) { const no = ++S.seq.user; b = { id: 'user-' + no + '-' + (t % 1e6), no, owner: 'user' }; S.bets.user.push(b); }
-    const linked = form.matchId ? D.match(form.matchId) : null;
-    Object.assign(b, { placedAt: b.placedAt && form.id && U.dateStr(b.placedAt) === form.date ? b.placedAt : placed, sport: form.sport, league: form.league.trim(), country: linked ? linked.country : '', match: form.match.trim(), market: form.market, selection: form.selection.trim(), odds: round2(o), stake: round2(s), potential: round2(s * (o - 1)), impliedProb: 1 / o, reasoning: form.reasoning.trim(), status: form.status });
-    if (linked) Object.assign(b, { matchId: linked.id, home: linked.home, away: linked.away, start: linked.start, marketKey: form.marketKey || b.marketKey, selKey: form.selKey || b.selKey, line: form.line != null ? form.line : b.line });
-    b.pl = calcPl(b.status, b.stake, b.odds);
-    if (b.status !== 'pending') b.settledAt = prevStatus === b.status && b.settledAt ? b.settledAt : t; else b.settledAt = null;
-    if (linked && b.status === 'pending' && D.status(linked) === 'finished') A.settleBet(b, linked);
-    form = null; save(); closeModal(); toast('Bet saved.', 'pos'); rerender();
-  });
-  on('bj-add', () => openBetForm(null));
-  on('bj-edit', (el) => { const b = S.bets.user.find((x) => x.id === el.dataset.id); if (b) openBetForm(b); });
-  on('bj-del', (el) => {
-    const b = S.bets.user.find((x) => x.id === el.dataset.id); if (!b) return;
-    openModal('Delete bet', '<p>Delete <b>' + esc(b.selection) + '</b> on ' + esc(b.match) + ' (' + money(b.stake) + ' @ ' + odds(b.odds) + ')? This cannot be undone.</p>', { foot: '<button type="button" class="btn" data-act="modal-close">Cancel</button><button type="button" class="btn btn-neg" data-act="bj-del-yes" data-id="' + b.id + '">' + icon('trash') + 'Delete</button>' });
-  });
-  on('bj-del-yes', (el) => { S.bets.user = S.bets.user.filter((x) => x.id !== el.dataset.id); save(); closeModal(); toast('Bet deleted.'); rerender(); });
-  on('bj-res', (el) => { const b = S.bets.user.find((x) => x.id === el.dataset.id); if (!b) return; b.status = el.dataset.v; b.pl = calcPl(b.status, b.stake, b.odds); b.settledAt = now(); save(); rerender(); });
-  on('bj-tab', (el) => { S.ui.uJ.status = el.dataset.v; save(); rerender(); });
-  on('track', (el) => {
-    const m = D.match(el.dataset.id); if (!m) return; const [mk, key] = el.dataset.v.split('|');
-    const s = an(m).markets.flatMap((x) => x.sels).find((x) => x.mk === mk && x.key === key); if (!s) return;
-    openBetForm(null, { match: m.home + ' vs ' + m.away, sport: m.sport, league: m.league, market: s.mkName, selection: selText(s), odds: String(s.odds), matchId: m.id, marketKey: s.mk, selKey: s.key, line: s.line, date: todayStr() });
-  });
-
-  V.journal = () => {
-    const f = S.ui.uJ; const all = S.bets.user; const st = stats(all, S.user.startingBankroll); const bk = bankroll('user');
-    const list = all.filter((b) => f.status === 'all' || b.status === f.status).sort((a, b) => b.placedAt - a.placedAt);
-    const actions = (b) => (b.status === 'pending' && !b.matchId ? ['won', 'lost', 'void'].map((r) => '<button type="button" class="mini mini-' + r + '" data-act="bj-res" data-id="' + b.id + '" data-v="' + r + '">' + r[0].toUpperCase() + r.slice(1) + '</button>').join('') : '') +
-      '<button type="button" class="ib" data-act="bj-edit" data-id="' + b.id + '" aria-label="Edit bet">' + icon('edit') + '</button><button type="button" class="ib" data-act="bj-del" data-id="' + b.id + '" aria-label="Delete bet">' + icon('trash') + '</button>';
-    const cnt = (s) => all.filter((b) => b.status === s).length;
-    return pageHead('Bet journal', 'Your own record. Profit, ROI, win rate and bankroll update automatically. ' + demoTag('Demo history'), '<button type="button" class="btn btn-sig" data-act="bj-add">' + icon('plus') + 'Add bet</button>') +
-      '<div class="kg k6">' + kpi('Bankroll', money(bk), 'start ' + money(S.user.startingBankroll)) + kpi('Profit / loss', '<span class="' + plClass(st.pl) + '">' + money(st.pl, true) + '</span>', '') + kpi('ROI', '<span class="' + plClass(st.roi || 0) + '">' + pct(st.roi) + '</span>', money(st.staked) + ' staked') +
-      kpi('Win rate', pct(st.winRate), st.wins + 'W ' + st.losses + 'L') + kpi('Open', String(st.pending), money(all.filter((b) => b.status === 'pending').reduce((a, b) => a + b.stake, 0)) + ' at stake') + kpi('Streak', st.streak, 'longest L' + st.maxLoss) + '</div>' +
-      sampleNote(st.decided) +
-      tabs('bj-tab', [['all', 'All', all.length], ['pending', 'Pending', cnt('pending')], ['won', 'Won', cnt('won')], ['lost', 'Lost', cnt('lost')], ['void', 'Void', cnt('void')]], f.status, 'mt') +
-      panel(null, list.length ? betList(list, 'user', { actions }) : empty('No bets here yet', 'Add a bet manually or track a selection from any match page.', '<button type="button" class="btn btn-sig" data-act="bj-add">' + icon('plus') + 'Add bet</button>'), { flush: true });
+  on('msel', (el) => { S.ui.mSel[el.dataset.id] = el.dataset.k; rerender(); });
+  V.match = function (params) {
+    const m = D.match(params[0]);
+    if (!m) return empty('Матч не знайдено', 'Такого матчу немає в демо-фіді.', '<a class="btn" href="#/matches">До матчів</a>');
+    const a = an(m); const l = D.live(m);
+    const tabs = [['analysis', 'Аналіз'], ['stats', 'Статистика'], ['odds', 'Коефіцієнти'], ['news', 'Новини']];
+    if (l.status !== 'upcoming') tabs.splice(0, 0, ['live', l.status === 'live' ? 'Наживо' : 'Перебіг']);
+    let tab = params[1] || S.ui.mTab[m.id] || (l.status === 'live' ? 'live' : 'analysis'); if (!tabs.some((x) => x[0] === tab)) tab = 'analysis';
+    S.ui.mTab[m.id] = tab;
+    const mid = l.status === 'upcoming' ? '<div class="score up"><b>' + time(m.start) + '</b><span>' + dayLabel(m.start) + '</span></div>' : '<div class="score' + (l.status === 'live' ? ' lv' : '') + '"><b>' + l.h + ':' + l.a + '</b><span>' + esc(l.label) + '</span>' + (l.detail ? '<small>' + esc(l.detail) + '</small>' : '') + '</div>';
+    const news = D.newsForMatch(m);
+    let body;
+    if (tab === 'live') body = '<div class="panel">' + liveBlock(m, true) + '</div>';
+    else if (tab === 'stats') body = tabStats(m);
+    else if (tab === 'odds') body = tabOdds(m, a);
+    else if (tab === 'news') body = news.length ? '<div class="nlist">' + news.map((n) => newsCard(n)).join('') + '</div>' : empty('Новин про цей матч немає', 'Якщо з’являться новини про склади чи травми, вони будуть тут.');
+    else body = tabAnalysis(m, a);
+    return '<a class="back" href="#/matches">' + icon('chevL') + 'Усі матчі</a>' +
+      '<section class="mhead"><div class="mhead-top">' + meta(m) + '<span>' + esc(m.region) + '</span><span>' + dateTime(m.start) + '</span>' + demoB() + '</div>' +
+      '<div class="mhead-main">' + teamBlock(m.home, m.ctx.formH) + mid + teamBlock(m.away, m.ctx.formA, true) + '</div></section>' +
+      '<nav class="tabs" role="tablist">' + tabs.map(([k, t]) => '<a role="tab" aria-selected="' + (k === tab) + '" class="' + (k === tab ? 'on' : '') + '" href="' + mLink(m) + '/' + k + '">' + t + (k === 'news' && news.length ? '<em>' + news.length + '</em>' : '') + '</a>').join('') + '</nav>' + body;
   };
 
-  /* ---------------- SETTINGS ---------------- */
-  const CURRENCIES = ['EUR', 'USD', 'GBP', 'PLN', 'UAH'];
-  const TIMEZONES = [['local', 'Device time zone'], ['UTC', 'UTC'], ['Europe/Kyiv', 'Kyiv'], ['Europe/Warsaw', 'Warsaw'], ['Europe/London', 'London'], ['Europe/Berlin', 'Berlin'], ['America/New_York', 'New York']];
-  V.settings = () => {
-    const st = S.settings; const set = (k, after) => (v) => { st[k] = v; save(); if (after) after(); rerender(); };
-    const P = E.CONFIG.profiles;
-    const ai = '<div class="set-r"><div><b>Starting AI bankroll</b><small>Virtual money. Changing it re-bases the existing record.</small></div><input type="number" class="inp-sm" min="10" step="10" value="' + S.ai.startingBankroll + '" data-change="set-aibank" aria-label="Starting AI bankroll"></div>' +
-      '<div class="set-r"><div><b>Risk profile</b><small>' + Object.values(P).map((p) => p.label + ': ' + p.minEdge + 'pp, conf ' + p.minConf + ', cap ' + pct(p.cap)).join(' · ') + '</small></div>' + seg('set-risk', Object.keys(P).map((k) => [k, P[k].label]), st.risk) + '</div>' +
-      '<div class="set-r"><div><b>Auto-scan</b><small>The AI re-scans every 30 minutes while the app is open.</small></div>' + toggle('ai-auto', S.ai.autoScan, S.ai.autoScan ? 'On' : 'Off') + '</div>' +
-      '<div class="set-r"><div><b>Rebuild AI history</b><small>Deletes all AI bets and regenerates ' + A.HISTORY_DAYS + ' days of paper trading with the current bankroll and risk profile.</small></div><button type="button" class="btn btn-neg btn-sm" data-act="set-ai-reset">' + icon('refresh') + 'Rebuild</button></div>';
-    const you = '<div class="set-r"><div><b>Your starting bankroll</b><small>Used for bankroll, drawdown and comparison.</small></div><input type="number" class="inp-sm" min="0" step="10" value="' + S.user.startingBankroll + '" data-change="set-ubank" aria-label="Your starting bankroll"></div>';
-    const disp = '<div class="set-r"><div><b>Currency</b><small>Display only. No conversion is applied.</small></div>' + dd('set-cur', CURRENCIES.map((c) => ({ v: c, l: c })), st.currency, set('currency')) + '</div>' +
-      '<div class="set-r"><div><b>Time zone</b><small>For kick-off times and the demo clock.</small></div>' + dd('set-tz', TIMEZONES.map(([v, l]) => ({ v, l })), st.timezone, set('timezone')) + '</div>' +
-      '<div class="set-r"><div><b>Theme</b><small>Dark is the default terminal look.</small></div>' + seg('set-theme', [['dark', 'Dark'], ['light', 'Light']], st.theme) + '</div>' +
-      '<div class="set-r"><div><b>Language</b><small>Interface strings are prepared for translation (I18N in app.js).</small></div>' + dd('set-lang', [{ v: 'en', l: 'English' }, { v: 'uk', l: 'Українська (coming soon)', disabled: true }], st.lang, set('lang')) + '</div>';
-    const sports = '<p class="dim small">Used by the AI, opportunities and notifications. The scanner always shows everything.</p><div class="chips wrap">' + Object.values(D.SPORTS).map((s) => chip('set-sport', s.id, esc(s.name), st.sports.includes(s.id))).join('') + '</div>' +
-      '<div class="sub-h">Preferred leagues <small>none selected means all leagues</small></div><div class="chips wrap">' + D.LEAGUES.filter((L) => st.sports.includes(L.sport)).map((L) => chip('set-league', L.id, esc(L.name) + ' <em>' + esc(L.country) + '</em>', st.leagues.includes(L.id))).join('') + '</div>';
-    const NT = [['news', 'Injury and team news', 'High impact items only'], ['start', 'Match starting soon', 'Your open bets and high-interest matches'], ['aiBet', 'AI bet placed', ''], ['aiSettle', 'Bet settled', 'AI and linked journal bets'], ['odds', 'Odds movement', 'Moves above 10% from opening'], ['model', 'Model update', 'After each AI scan']];
-    const notif = NT.map(([k, l, d]) => '<div class="set-r"><div><b>' + l + '</b>' + (d ? '<small>' + d + '</small>' : '') + '</div>' + toggle('set-notif', st.notif[k] !== false, st.notif[k] !== false ? 'On' : 'Off', ' data-v="' + k + '"') + '</div>').join('');
-    const clock = '<p class="dim small">Fast-forward time to watch matches go live, finish and settle. Current offset: ' + Math.round((st.clockOffset || 0) / 60000) + ' min.</p>' + clockBtns();
-    const prov = Object.entries(SIT.providers).map(([k, p]) => '<div class="set-r"><div><b>' + esc(p.name) + '</b><small>SIT.providers.' + k + ' · id ' + esc(p.id) + '</small></div>' + (p.isDemo ? demoTag('Demo') : '<span class="cat cat-confidence">Live</span>') + '</div>').join('') +
-      '<div class="set-r"><div><b>LLM explanations</b><small>SIT.Engine.llm in engine.js</small></div>' + (E.llm.enabled ? '<span class="cat cat-confidence">Enabled</span>' : '<span class="dim">Not connected</span>') + '</div>' +
-      note('To connect real data, implement the provider contract documented at the bottom of data.js and assign it to SIT.providers. Use licensed APIs and respect each site\'s terms. Scrapers are not included.');
-    const data = '<div class="set-r"><div><b>Export data</b><small>Bets, settings and notifications as JSON.</small></div><button type="button" class="btn btn-sm" data-act="set-export">' + icon('download') + 'Export JSON</button></div>' +
-      '<div class="set-r"><div><b>Reset everything</b><small>Clears local storage and rebuilds the demo from scratch.</small></div><button type="button" class="btn btn-neg btn-sm" data-act="set-reset">' + icon('trash') + 'Reset all data</button></div>';
-    return pageHead('Settings', 'Stored locally in this browser. ' + demoTag()) +
-      '<div class="grid">' + panel('AI Analyst account', ai, { cls: 'c6' }) + panel('Display', disp, { cls: 'c6' }) + panel('Your account', you, { cls: 'c6' }) + panel('Demo clock', clock, { cls: 'c6' }) +
-      panel('Preferred sports', sports, { cls: 'c12' }) + panel('Notifications', notif, { cls: 'c6' }) + panel('Data sources', prov, { cls: 'c6' }) + panel('Your data', data, { cls: 'c12' }) + '</div>';
+  /* ================= НОВИНИ (картка використовується і вище) ================= */
+  function newsCard(n, compact) {
+    const ms = n.matchIds.map((id) => D.match(id)).filter(Boolean);
+    return '<article class="news imp-' + n.impact + '"><div class="news-top">' + impB(n.impact) + sportIc(n.sport) + '<span>' + esc(n.source) + '</span><time>' + ago(n.time) + '</time></div>' +
+      '<h3>' + esc(n.title) + '</h3>' + (compact ? '' : '<p>' + esc(n.fact) + '</p>') +
+      '<div class="why-box"><b>Чому це важливо</b><span class="muted small">інтерпретація AI, а не факт</span><p>' + esc(n.why) + '</p></div>' +
+      (ms.length ? '<div class="news-m">' + ms.map((m) => '<a href="' + mLink(m) + '">' + esc(m.home) + ' проти ' + esc(m.away) + ', ' + dateTime(m.start) + '</a>').join('') + '</div>' : '') + '</article>';
+  }
+  SIT.ViewParts = { mLink, an, head, sec, more, sportOpts, pool, CATS, oppCard, oppRow, matchRow, newsCard, factorRows, probBars, liveBlock, liveFlags, isFav, meta };
+})();
+
+/* ================= МОЖЛИВОСТІ, НАЖИВО, AI, НОВИНИ ================= */
+(function () {
+  'use strict';
+  const SIT = window.SIT, D = SIT.Data, M = SIT.Model, U = SIT.U, A = SIT.App, S = A.S;
+  const { esc, money, num, pct, pp, odds, time, dayLabel, dateTime, ago, plural, plCls, icon, sportIc, confB, riskB, valB, resB, demoB, statusLine,
+    empty, note, tile, plSpan, chips, select, sw, RES, lineChart, hbars, openModal, toast, on, rerender, render, save, now } = A;
+  const V = SIT.Views; const P = SIT.ViewParts; const H = 3600e3;
+
+  V.opps = function () {
+    const all = P.pool(36).filter((a) => a.best.value > 0 && a.cats.length);
+    const cnt = (k) => all.filter((a) => a.cats.includes(k)).length;
+    let list = S.ui.oCat === 'all' ? all : all.filter((a) => a.cats.includes(S.ui.oCat));
+    const so = { interest: (a) => -a.interest, value: (a) => -a.best.value, conf: (a) => -a.best.conf.value, time: (a) => a.m.start }[S.ui.oSort] || ((a) => -a.interest);
+    list = list.slice().sort((x, y) => so(x) - so(y)).slice(0, 24);
+    return P.head('Можливості', 'Матчі найближчих 36 годин, де оцінка моделі відрізняється від ринку. Це статистичні сигнали, а не поради і не гарантія.') +
+      '<div class="filters">' + chips('ui.oCat', [['all', 'Усі', all.length]].concat(Object.keys(P.CATS).map((k) => [k, P.CATS[k], cnt(k)]))) +
+      '<div class="frow">' + select('ui.oSort', [['interest', 'Спершу найцікавіші'], ['value', 'Спершу найбільша різниця'], ['conf', 'Спершу найвпевненіші'], ['time', 'Спершу найближчі']]) + '</div></div>' +
+      (list.length ? '<div class="opp-grid">' + list.map(P.oppCard).join('') + '</div>' : empty('У цій категорії порожньо', S.ui.oCat === 'live' ? 'Зараз немає матчів наживо з помітним сигналом.' : 'Спробуйте іншу категорію або зазирніть пізніше.'));
   };
-  on('change:set-aibank', (el) => { const v = Math.max(10, Math.round(+el.value || 0)); S.ai.startingBankroll = v; save(); toast('AI starting bankroll set to ' + money(v) + '.'); rerender(); });
-  on('change:set-ubank', (el) => { const v = Math.max(0, Math.round(+el.value || 0)); S.user.startingBankroll = v; save(); toast('Your starting bankroll set to ' + money(v) + '.'); rerender(); });
-  on('set-risk', (el) => { S.settings.risk = el.dataset.v; save(); toast(E.CONFIG.profiles[el.dataset.v].label + ' profile applies to new AI bets. Rebuild history to apply it retroactively.'); rerender(); });
-  on('set-theme', (el) => { S.settings.theme = el.dataset.v; A.setTheme(); save(); rerender(); });
-  on('set-sport', (el) => { const s = S.settings.sports; const v = el.dataset.v; if (s.includes(v)) { if (s.length === 1) return toast('Keep at least one sport.', 'neg'); s.splice(s.indexOf(v), 1); S.settings.leagues = S.settings.leagues.filter((l) => D.LEAGUE_BY_ID[l].sport !== v); } else s.push(v); save(); rerender(); });
-  on('set-league', (el) => { const l = S.settings.leagues; const v = el.dataset.v; if (l.includes(v)) l.splice(l.indexOf(v), 1); else l.push(v); save(); rerender(); });
-  on('set-notif', (el) => { const k = el.dataset.v; S.settings.notif[k] = S.settings.notif[k] === false; save(); rerender(); });
-  on('set-export', () => {
-    const { matches, news, ...data } = S;
-    const blob = new Blob([JSON.stringify({ exportedAt: new Date().toISOString(), app: 'Sports Intelligence Terminal', demo: true, data }, null, 2)], { type: 'application/json' });
-    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'sit-export-' + todayStr() + '.json'; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
-    toast('Export started.');
+
+  const clockBtns = () => '<div class="clock-b"><span class="muted">Демо-час</span><button type="button" class="btn ghost sm" data-act="clock" data-m="15">+15 хв</button><button type="button" class="btn ghost sm" data-act="clock" data-m="60">+1 год</button><button type="button" class="btn ghost sm" data-act="clock" data-m="360">+6 год</button>' + (S.settings.clock ? '<button type="button" class="btn ghost sm" data-act="clock" data-m="0">Скинути</button>' : '') + '</div>';
+  SIT.ViewParts.clockBtns = clockBtns;
+  V.live = function () {
+    const t = now();
+    const ms = D.matchesInRange(U.addDays(U.ds(t), -1), 3);
+    const live = ms.filter((m) => D.status(m) === 'live');
+    const cnt = (sp) => live.filter((m) => sp === 'all' || m.sport === sp).length;
+    const list = live.filter((m) => S.ui.liveSport === 'all' || m.sport === S.ui.liveSport);
+    const soon = ms.filter((m) => D.status(m) === 'upcoming' && m.start - t < 3 * H).slice(0, 6);
+    return P.head('Наживо', 'Рахунок, хід матчу та перевага. Демо-час можна перемотати, щоб побачити, як матчі йдуть і завершуються.', clockBtns()) +
+      '<div class="filters">' + chips('ui.liveSport', P.sportOpts().map(([v, l]) => [v, l, cnt(v)])) + '</div>' +
+      (list.length ? '<div class="live-grid">' + list.map((m) => '<a class="live-card" href="' + P.mLink(m) + '"><div class="opp-top">' + P.meta(m) + '</div>' + P.liveBlock(m, m.sport === 'football') + '</a>').join('') + '</div>'
+        : empty('Зараз ніхто не грає', 'Перемотайте час на годину вперед, і перші матчі почнуться.', clockBtns())) +
+      P.sec('Скоро почнуться', soon.length ? '<div class="mlist">' + soon.map((m) => P.matchRow(m)).join('') + '</div>' : '<p class="muted">У найближчі 3 години матчів немає.</p>');
+  };
+
+  /* ---------- AI-аналітик ---------- */
+  function aiBetModal(id) {
+    const b = S.bets.ai.find((x) => x.id === id) || S.bets.user.find((x) => x.id === id); if (!b) return;
+    const kv = (l, v) => '<div class="kv"><span>' + l + '</span><b>' + v + '</b></div>';
+    const r = b.review;
+    const body = '<div class="bm"><div class="bm-top">' + sportIc(b.sport) + '<span>' + esc(b.tour) + '</span>' + resB(b.status) + demoB('Паперова ставка') + '</div>' +
+      '<a class="bm-m" href="#/match/' + encodeURIComponent(b.matchId) + '">' + esc(b.match) + '</a><p class="muted">' + (b.score ? 'Рахунок ' + esc(b.score) : 'Початок ' + dateTime(b.start)) + '</p>' +
+      '<div class="kvs">' + kv('Ринок', esc(b.mkName)) + kv('Вибір', esc(b.selection)) + kv('Коефіцієнт', odds(b.odds)) + kv('Сума', money(b.stake)) + kv('Можливий виграш', money(b.stake * (b.odds - 1))) + kv('Модель', '<span class="acc">' + pct(b.model) + '</span>') + kv('Ринок', pct(b.implied)) + kv('Різниця', valB(b.value)) + kv('Впевненість', b.conf + ' / 100') + kv('Ризик', A.RISK[b.risk]) + kv('Результат', resB(b.status)) + kv('Прибуток', b.status === 'pending' ? '<span class="muted">ще не відомо</span>' : plSpan(b.pl)) + kv('Ставку зроблено', new Date(b.placedAt).toLocaleString('uk-UA', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })) + '</div>' +
+      '<h4>Пояснення</h4><p>' + esc(b.reasoning) + '</p>' +
+      '<div class="two"><div class="pc pro"><h4>За</h4><ul>' + (b.pros.length ? b.pros.map((x) => '<li>' + esc(x) + '</li>').join('') : '<li>Помітних факторів не було</li>') + '</ul></div><div class="pc con"><h4>Проти</h4><ul>' + b.cons.map((x) => '<li>' + esc(x) + '</li>').join('') + '</ul></div></div>' +
+      (b.factors.length ? '<h4>Фактори</h4>' + P.factorRows(b.factors) : '') +
+      '<div class="pm"><h4>Розбір після матчу</h4>' + (r ? '<div class="pm-g"><div><b>До матчу</b><p>' + esc(r.before) + '</p></div><div><b>Після матчу</b><p>' + esc(r.after) + '</p></div><div class="pro"><b>Що спрацювало</b><ul>' + r.correct.map((x) => '<li>' + esc(x) + '</li>').join('') + '</ul></div><div class="con"><b>Що не спрацювало</b><ul>' + r.wrong.map((x) => '<li>' + esc(x) + '</li>').join('') + '</ul></div><div><b>Помилка моделі</b><p>' + esc(r.error) + '</p></div><div class="lesson"><b>Висновок</b><p>' + esc(r.lesson) + '</p></div></div>' : '<p class="muted">Розбір з’явиться після завершення матчу.</p>') + '</div></div>';
+    openModal((b.owner === 'ai' ? 'Ставка AI №' : 'Ваша ставка №') + String(b.no).padStart(3, '0'), body, '', true);
+  }
+  SIT.ViewParts.aiBetModal = aiBetModal;
+  on('bet-open', (el) => aiBetModal(el.dataset.id));
+  function betList(bets, owner) {
+    return '<div class="blist">' + bets.map((b) => '<div class="brow" data-act="bet-open" data-id="' + b.id + '" tabindex="0" role="button">' +
+      '<span class="brow-d"><b>' + (owner === 'ai' ? '№' + b.no : dayLabel(b.placedAt)) + '</b><small>' + (owner === 'ai' ? dayLabel(b.placedAt) : time(b.placedAt)) + '</small></span>' +
+      '<span class="brow-m">' + sportIc(b.sport) + '<span><b>' + esc(b.match) + '</b><small>' + esc(b.mkName || b.market || '') + ': ' + esc(b.selection) + '</small></span></span>' +
+      '<span class="brow-o">' + odds(b.odds) + '<small>' + money(b.stake) + '</small></span>' +
+      '<span class="brow-r">' + resB(b.status) + '<b class="' + plCls(b.pl) + '">' + (b.status === 'pending' ? '<span class="muted">' + money(b.stake * (b.odds - 1), true) + '</span>' : money(b.pl, true)) + '</b></span>' +
+      (owner === 'user' ? '<span class="brow-a"><button type="button" class="ib" data-act="bet-edit" data-id="' + b.id + '" aria-label="Редагувати">' + icon('edit') + '</button><button type="button" class="ib" data-act="bet-del" data-id="' + b.id + '" aria-label="Видалити">' + icon('trash') + '</button></span>' : '') +
+      '</div>').join('') + '</div>';
+  }
+  SIT.ViewParts.betList = betList;
+  let opened = null;
+  V.ai = function (params) {
+    if (params[0] && opened !== params[0]) { opened = params[0]; setTimeout(() => aiBetModal(params[0]), 30); }
+    if (!params[0]) opened = null;
+    const rng = S.ui.aiRange; const bets = A.inRange(S.bets.ai, rng);
+    const st = A.stats(bets, S.ai.start); const all = A.stats(S.bets.ai, S.ai.start);
+    const Pf = M.PROFILES[S.settings.risk];
+    let jl = S.bets.ai.filter((b) => (S.ui.aiStatus === 'all' || b.status === S.ui.aiStatus) && (S.ui.aiSport === 'all' || b.sport === S.ui.aiSport)).sort((x, y) => y.placedAt - x.placedAt);
+    const lim = Number(S.ui.aiLimit) || 25;
+    const bySport = A.group(bets, (b) => D.SPORTS[b.sport].name).map((r) => ({ l: r.key, v: r.pl, n: r.n }));
+    const byMk = A.group(bets, (b) => b.mkName.replace(/ [\d,.]+$/, ''));
+    return P.head('AI-аналітик', 'Віртуальний рахунок. AI сам аналізує матчі, робить паперові ставки за фіксованими правилами і зберігає всю історію, включно з програшами.', '<div class="ph-act">' + sw('settings.autoAI', 'Автоматично') + '<button type="button" class="btn primary" data-act="ai-run">' + icon('ai') + 'Запустити аналіз</button></div>') +
+      '<div class="filters">' + chips('ui.aiRange', [['7', '7 днів'], ['30', '30 днів'], ['90', '90 днів'], ['all', 'Увесь час']]) + '</div>' +
+      (st.decided < 30 ? A.note('Мала вибірка: ' + st.decided + ' ' + plural(st.decided, ['розрахована ставка', 'розраховані ставки', 'розрахованих ставок']) + '. На такій дистанції результат майже повністю залежить від везіння.', 'warn') : '') +
+      '<div class="tiles t4">' + tile('Баланс', money(all.bank), 'старт ' + money(S.ai.start)) + tile('Прибуток', plSpan(st.pl), rng === 'all' ? 'за весь час' : 'за ' + rng + ' днів') + tile('ROI', '<span class="' + plCls(st.roi || 0) + '">' + pct(st.roi) + '</span>', 'прибуток до суми ставок') + tile('Влучність', pct(st.winRate, 0), st.wins + ' виграшів, ' + st.losses + ' програшів') +
+      tile('Ставок', String(st.n), st.pending + ' очікують') + tile('Середній коефіцієнт', odds(st.avgOdds)) + tile('Найбільший виграш', plSpan(st.best), 'найбільший програш ' + money(st.worst)) + tile('Макс. просадка', money(st.maxDD), 'поточна серія ' + st.streak) + '</div>' +
+      P.sec('Баланс AI', lineChart({ series: [{ name: 'Баланс', values: st.series.map((p) => p.bank), color: '#2357e8' }], labels: st.series.map((p) => dayLabel(p.t)), area: true, fmt: (v) => money(v), title: 'Баланс AI' })) +
+      '<div class="cols">' + P.sec('Прибуток за видами спорту', hbars(bySport, (v) => money(v, true))) +
+      P.sec('За ринками', '<table class="tbl"><thead><tr><th>Ринок</th><th class="r">Ставок</th><th class="r">Влучність</th><th class="r">ROI</th></tr></thead><tbody>' + byMk.map((r) => '<tr><td>' + esc(r.key) + (r.n < 10 ? ' <span class="lown">мало даних</span>' : '') + '</td><td class="r">' + r.n + '</td><td class="r">' + pct(r.winRate, 0) + '</td><td class="r ' + plCls(r.roi || 0) + '">' + pct(r.roi) + '</td></tr>').join('') + '</tbody></table>') + '</div>' +
+      P.sec('Як AI робить ставки', '<ul class="plain"><li>Профіль: <b>' + Pf.name + '</b> (змінюється в кабінеті, у налаштуваннях).</li><li>Ставить, лише якщо модель бачить різницю від ' + Pf.minEdge + ' п.п., впевненість від ' + Pf.minConf + ' і коефіцієнт від 1,35 до ' + num(Pf.maxOdds, 2) + '.</li><li>Сума: частина критерію Келлі, не більше ' + Math.round(Pf.cap * 100) + '% балансу на одну ставку і 15% на всі відкриті.</li><li>Програші не видаляються і не приховуються.</li></ul>') +
+      P.sec('Журнал ставок AI', '<div class="frow">' + chips('ui.aiStatus', [['all', 'Усі'], ['pending', 'Очікують'], ['won', 'Виграш'], ['lost', 'Програш']]) + select('ui.aiSport', P.sportOpts().map(([v, l]) => [v, v === 'all' ? 'Усі види спорту' : l])) + '</div>' +
+        (jl.length ? betList(jl.slice(0, lim), 'ai') + (jl.length > lim ? '<div class="more-b"><button type="button" class="btn ghost" data-act="set" data-k="ui.aiLimit" data-v="' + (lim + 25) + '">Показати ще (' + (jl.length - lim) + ')</button></div>' : '') : empty('Ставок немає', 'Змініть фільтр або запустіть аналіз.')));
+  };
+
+  /* ---------- новини ---------- */
+  V.news = function () {
+    const all = D.news(now(), 3);
+    const list = all.filter((n) => (S.ui.newsSport === 'all' || n.sport === S.ui.newsSport) && (S.ui.newsImp === 'all' || n.impact === S.ui.newsImp));
+    return P.head('Новини', 'Кожна новина поділена на факт і пояснення, чому це може бути важливо. Пояснення є інтерпретацією AI, а не фактом.') +
+      '<div class="filters">' + chips('ui.newsSport', P.sportOpts()) + chips('ui.newsImp', [['all', 'Будь-який вплив'], ['high', 'Високий'], ['medium', 'Середній'], ['low', 'Низький']]) + '</div>' +
+      (list.length ? '<div class="nlist wide">' + list.map((n) => P.newsCard(n)).join('') + '</div>' : empty('Новин немає', 'Спробуйте інший фільтр.'));
+  };
+})();
+
+/* ================= ОСОБИСТИЙ КАБІНЕТ, ФОРМА СТАВКИ, ЗНАЙОМСТВО ================= */
+(function () {
+  'use strict';
+  const SIT = window.SIT, D = SIT.Data, M = SIT.Model, U = SIT.U, A = SIT.App, S = A.S;
+  const { esc, money, num, pct, odds, time, dayLabel, dateTime, plural, plCls, initials, icon, sportIc, resB, demoB, empty, note, tile, plSpan, chips, select, sw, RES,
+    lineChart, hbars, openModal, closeModal, toast, on, onInput, onChange, rerender, render, save, now } = A;
+  const V = SIT.Views; const P = SIT.ViewParts; const H = 3600e3;
+  const COLORS = ['#2357e8', '#0f9d74', '#d9480f', '#7048e8', '#c2255c', '#1c7ed6', '#2b2f36'];
+  const mkOf = (b) => (b.mkName || b.market || 'Інше').replace(/ [\d,.]+$/, '');
+
+  /* ---------- форма ставки ---------- */
+  let F = null;
+  const upcoming = () => D.matchesInRange(U.ds(now()), 3).filter((m) => D.status(m) === 'upcoming' && A.prefSport(m)).slice(0, 80);
+  function fillOdds() { const m = F.matchId && D.match(F.matchId); if (!m) return; const mk = D.markets(m).find((x) => x.key === F.mk); const s = mk && mk.sels.find((x) => x.key === F.key); if (s) F.odds = odds(s.odds); }
+  function formBody() {
+    const m = F.matchId ? D.match(F.matchId) : null;
+    const ms = upcoming(); if (m && !ms.includes(m)) ms.unshift(m);
+    const fld = (l, c, h) => '<label class="fld"><span>' + l + '</span>' + c + (h ? '<small>' + h + '</small>' : '') + '</label>';
+    const inp = (k, ph, mode) => '<input class="inp" data-f="' + k + '" data-in="bf" value="' + esc(F[k]) + '" placeholder="' + esc(ph) + '"' + (mode ? ' inputmode="' + mode + '"' : '') + ' autocomplete="off">';
+    const sel = (k, opts) => '<select class="inp" data-f="' + k + '" data-ch="bf">' + opts.map(([v, l]) => '<option value="' + esc(v) + '"' + (String(F[k]) === String(v) ? ' selected' : '') + '>' + esc(l) + '</option>').join('') + '</select>';
+    let h = '<div class="form">' + fld('Матч', sel('matchId', [['', 'Інший матч (ввести вручну)']].concat(ms.map((x) => [x.id, dayLabel(x.start) + ' ' + time(x.start) + ', ' + x.home + ' проти ' + x.away]))), 'Якщо обрати матч зі списку, ставка розрахується автоматично після його завершення.');
+    if (m) {
+      const mks = D.markets(m); const mk = mks.find((x) => x.key === F.mk) || mks[0];
+      h += '<div class="f2">' + fld('Ринок', sel('mk', mks.map((x) => [x.key, x.name]))) + fld('Вибір', sel('key', mk.sels.map((x) => [x.key, x.label + ' (' + odds(x.odds) + ')']))) + '</div>';
+    } else {
+      h += fld('Назва матчу', inp('match', 'Наприклад, Карпати проти Руху')) + '<div class="f2">' + fld('Вид спорту', sel('sport', Object.values(D.SPORTS).map((s) => [s.id, s.name]))) + fld('Ринок', inp('market', 'Наприклад, Результат матчу')) + '</div>' + fld('Вибір', inp('selection', 'Наприклад, Карпати'));
+    }
+    h += '<div class="f2">' + fld('Коефіцієнт', inp('odds', '1,85', 'decimal')) + fld('Сума, ' + ({ EUR: '€', USD: '$', UAH: '₴', PLN: 'zł' }[S.settings.currency]), inp('stake', '20', 'decimal')) + '</div>';
+    if (!m || F.id) h += fld('Результат', sel('status', [['pending', 'Очікує'], ['won', 'Виграш'], ['lost', 'Програш'], ['void', 'Повернення']]), m ? 'Для матчу зі списку результат проставиться сам.' : '');
+    h += fld('Нотатка', '<textarea class="inp" data-f="note" data-in="bf" rows="2" placeholder="Чому ця ставка?">' + esc(F.note) + '</textarea>') + '<div class="prev" id="bf-prev">' + preview() + '</div><div class="err" id="bf-err" role="alert"></div></div>';
+    return h;
+  }
+  const toNum = (v) => parseFloat(String(v).replace(',', '.').replace(/\s/g, ''));
+  function preview() { const o = toNum(F.odds), s = toNum(F.stake); if (!(o > 1) || !(s > 0)) return 'Вкажіть коефіцієнт і суму, щоб побачити можливий виграш.'; return 'Можливий виграш <b>' + money(s * (o - 1)) + '</b>, повернення <b>' + money(s * o) + '</b>, ймовірність у коефіцієнті <b>' + pct(1 / o) + '</b>.'; }
+  function sync() { document.querySelectorAll('.modal [data-f]').forEach((i) => (F[i.dataset.f] = i.value)); }
+  function refresh() { const b = document.querySelector('.modal .mb'); if (b) b.innerHTML = formBody(); }
+  function openForm(init) {
+    init = init || {};
+    if (init.id) { const b = S.bets.user.find((x) => x.id === init.id); F = { id: b.id, matchId: b.matchId || '', mk: b.mk || '', key: b.key || '', match: b.match, sport: b.sport, market: b.market || b.mkName || '', selection: b.selection, odds: odds(b.odds), stake: String(b.stake), status: b.status, note: b.note || '' }; }
+    else {
+      F = { id: null, matchId: init.matchId || '', mk: '', key: '', match: '', sport: 'football', market: '', selection: '', odds: '', stake: '20', status: 'pending', note: '' };
+      if (F.matchId) { const [mk, k] = (init.k || '').split('|'); const m = D.match(F.matchId); const mks = D.markets(m); F.mk = mk || mks[0].key; F.key = k || mks[0].sels[0].key; fillOdds(); }
+    }
+    openModal(F.id ? 'Редагувати ставку' : 'Нова ставка', formBody(), '<button type="button" class="btn ghost" data-act="close">Скасувати</button><button type="button" class="btn primary" data-act="bet-save">' + icon('check') + 'Зберегти</button>');
+  }
+  onInput('bf', (el) => { F[el.dataset.f] = el.value; const p = document.getElementById('bf-prev'); if (p) p.innerHTML = preview(); });
+  onChange('bf', (el) => {
+    sync(); const k = el.dataset.f;
+    if (k === 'matchId' && F.matchId) { const mks = D.markets(D.match(F.matchId)); F.mk = mks[0].key; F.key = mks[0].sels[0].key; fillOdds(); }
+    if (k === 'mk') { const mk = D.markets(D.match(F.matchId)).find((x) => x.key === F.mk); F.key = mk.sels[0].key; fillOdds(); }
+    if (k === 'key') fillOdds();
+    if (['matchId', 'mk', 'key'].includes(k)) refresh();
   });
-  on('set-ai-reset', () => openModal('Rebuild AI history', '<p>This deletes all ' + S.bets.ai.length + ' AI paper bets and regenerates ' + A.HISTORY_DAYS + ' days with a ' + money(S.ai.startingBankroll) + ' bankroll and the ' + E.CONFIG.profiles[S.settings.risk].label.toLowerCase() + ' profile.</p>', { foot: '<button type="button" class="btn" data-act="modal-close">Cancel</button><button type="button" class="btn btn-neg" data-act="set-ai-reset-yes">Rebuild</button>' }));
-  on('set-ai-reset-yes', async () => {
-    closeModal(); A.renderMeta.busy = true;
-    const view = document.getElementById('view');
-    view.innerHTML = '<div class="boot"><div class="boot-t">Rebuilding AI history</div><div class="boot-b">Running the model over ' + A.HISTORY_DAYS + ' days of fixtures.</div><div class="bar"><i id="boot-bar"></i></div></div>';
-    S.bets.ai = []; E.clearCache();
-    await A.bootstrapHistory((p) => { const b = document.getElementById('boot-bar'); if (b) b.style.width = Math.round(p * 100) + '%'; });
-    S.ai.lastScan = 0; A.renderMeta.busy = false; save(); toast('AI history rebuilt: ' + S.bets.ai.length + ' bets.', 'pos'); render();
+  on('bet-add', () => openForm({}));
+  on('bet-new', (el) => openForm({ matchId: el.dataset.id, k: el.dataset.k }));
+  on('bet-edit', (el, e) => { e.stopPropagation(); openForm({ id: el.dataset.id }); });
+  on('bet-del', (el, e) => {
+    e.stopPropagation(); const b = S.bets.user.find((x) => x.id === el.dataset.id); if (!b) return;
+    openModal('Видалити ставку?', '<p>Ставку <b>' + esc(b.match) + ', ' + esc(b.selection) + '</b> буде видалено, статистику перераховано. Скасувати це неможливо.</p>', '<button type="button" class="btn ghost" data-act="close">Скасувати</button><button type="button" class="btn danger" data-act="bet-del-ok" data-id="' + b.id + '">' + icon('trash') + 'Видалити</button>');
   });
-  on('set-reset', () => openModal('Reset all data', '<p>All bets, settings and notifications stored in this browser will be deleted. The demo will rebuild from scratch.</p>', { foot: '<button type="button" class="btn" data-act="modal-close">Cancel</button><button type="button" class="btn btn-neg" data-act="set-reset-yes">Reset everything</button>' }));
-  on('set-reset-yes', () => {
-    Object.keys(S).forEach((k) => delete S[k]); Object.assign(S, A.defaultState());
-    try { localStorage.removeItem(A.STORE_KEY); } catch (e) { /* ignore */ }
-    location.hash = '#/dashboard'; location.reload();
+  on('bet-del-ok', (el) => { S.bets.user = S.bets.user.filter((x) => x.id !== el.dataset.id); closeModal(); toast('Ставку видалено'); rerender(); });
+  on('bet-save', () => {
+    sync(); const o = toNum(F.odds), s = toNum(F.stake); const m = F.matchId ? D.match(F.matchId) : null; const errs = [];
+    if (!m && !F.match.trim()) errs.push('Вкажіть назву матчу.');
+    if (!m && !F.selection.trim()) errs.push('Вкажіть, на що ставка.');
+    if (!(o >= 1.01) || o > 500) errs.push('Коефіцієнт має бути числом від 1,01.');
+    if (!(s > 0)) errs.push('Сума має бути більшою за нуль.');
+    if (errs.length) { document.getElementById('bf-err').innerHTML = errs.join('<br>'); return; }
+    let b = F.id ? S.bets.user.find((x) => x.id === F.id) : null;
+    if (m) {
+      const a = M.analyze(m, now()); const mk = a.markets.find((x) => x.key === F.mk); const sel = Object.assign({}, mk.sels.find((x) => x.key === F.key), { odds: o });
+      if (!b) b = A.makeBet('user', m, sel, s, now(), { note: F.note.trim() });
+      else Object.assign(b, { matchId: m.id, sport: m.sport, tour: m.tourName, match: m.home + ' проти ' + m.away, start: m.start, mk: sel.mk, mkName: sel.mkName, key: sel.key, selection: sel.label, odds: o, stake: s, note: F.note.trim() });
+      if (F.id && F.status !== 'pending') { b.status = F.status; b.pl = F.status === 'won' ? U.round2(s * (o - 1)) : F.status === 'lost' ? -s : 0; b.settledAt = b.settledAt || now(); }
+      else if (D.status(m) === 'finished') A.settleBet(b, m); else { b.status = 'pending'; b.pl = 0; b.settledAt = null; }
+    } else {
+      if (!b) { const no = ++S.seq.user; b = { id: 'user-' + no + '-' + (Date.now() % 100000), no, owner: 'user', placedAt: now() }; S.bets.user.push(b); }
+      Object.assign(b, { matchId: null, sport: F.sport, tour: 'Вручну', match: F.match.trim(), start: b.placedAt, mk: null, mkName: F.market.trim() || 'Інше', market: F.market.trim() || 'Інше', key: null, selection: F.selection.trim(), odds: o, stake: s, note: F.note.trim(), model: null, factors: [], pros: [], cons: [], reasoning: '' });
+      b.status = F.status; b.pl = F.status === 'won' ? U.round2(s * (o - 1)) : F.status === 'lost' ? -s : 0; b.settledAt = F.status === 'pending' ? null : b.settledAt || now();
+    }
+    closeModal(); toast(F.id ? 'Зміни збережено' : 'Ставку додано в кабінет', 'ok');
+    if (!location.hash.startsWith('#/me')) location.hash = '#/me/bets'; else rerender();
+    save();
+  });
+  // Для ручних ставок без моделі відкриваємо форму замість розбору
+  const baseOpen = SIT.ViewParts.aiBetModal;
+  on('bet-open', (el) => { const b = S.bets.user.find((x) => x.id === el.dataset.id); if (b && b.model == null) openForm({ id: b.id }); else baseOpen(el.dataset.id); });
+
+  /* ---------- кабінет ---------- */
+  function overview() {
+    const st = A.stats(S.bets.user, S.user.start);
+    const act = S.bets.user.filter((b) => b.status === 'pending').sort((a, b) => a.start - b.start);
+    const last = S.bets.user.filter((b) => b.status !== 'pending').sort((a, b) => b.settledAt - a.settledAt).slice(0, 5);
+    const u30 = A.stats(A.inRange(S.bets.user, 30), 0), a30 = A.stats(A.inRange(S.bets.ai, 30), 0);
+    return '<div class="tiles t4">' + tile('Прибуток', plSpan(st.pl), 'від старту') + tile('ROI', '<span class="' + plCls(st.roi || 0) + '">' + pct(st.roi) + '</span>', st.decided + ' розрахованих') + tile('Влучність', pct(st.winRate, 0), st.wins + ' з ' + st.decided) + tile('Активні', String(st.pending), money(A.exposure('user')) + ' у грі') + '</div>' +
+      P.sec('Мій баланс', lineChart({ series: [{ name: 'Баланс', values: st.series.map((p) => p.bank), color: S.profile.color }], labels: st.series.map((p) => dayLabel(p.t)), area: true, fmt: (v) => money(v), title: 'Мій баланс' })) +
+      '<div class="cols">' + P.sec('Активні ставки', act.length ? P.betList(act, 'user') : empty('Активних ставок немає', 'Відкрийте матч і натисніть «Додати цю ставку».', '<button type="button" class="btn primary" data-act="bet-add">' + icon('plus') + 'Додати ставку</button>')) +
+      P.sec('Останні результати', last.length ? P.betList(last, 'user') : empty('Розрахованих ставок ще немає', '')) + '</div>' +
+      P.sec('Ви та AI за 30 днів', '<table class="tbl"><thead><tr><th></th><th class="r">Ви</th><th class="r">AI-аналітик</th></tr></thead><tbody>' +
+        [['Ставок', u30.n, a30.n], ['Влучність', pct(u30.winRate, 0), pct(a30.winRate, 0)], ['ROI', pct(u30.roi), pct(a30.roi)], ['Прибуток', money(u30.pl, true), money(a30.pl, true)], ['Середній коефіцієнт', odds(u30.avgOdds), odds(a30.avgOdds)]].map((r) => '<tr><td>' + r[0] + '</td><td class="r">' + r[1] + '</td><td class="r">' + r[2] + '</td></tr>').join('') + '</tbody></table><p class="fine">Це просто порівняння цифр. Переможця не визначаємо: різні суми, ринки й розмір вибірки.</p>');
+  }
+  function betsTab() {
+    const all = S.bets.user; const c = (s) => all.filter((b) => s === 'all' || b.status === s).length;
+    const list = all.filter((b) => S.ui.betF === 'all' || b.status === S.ui.betF).sort((a, b) => b.placedAt - a.placedAt);
+    return '<div class="frow between">' + chips('ui.betF', [['all', 'Усі', c('all')], ['pending', 'Очікують', c('pending')], ['won', 'Виграш', c('won')], ['lost', 'Програш', c('lost')], ['void', 'Повернення', c('void')]]) + '<button type="button" class="btn primary" data-act="bet-add">' + icon('plus') + 'Додати ставку</button></div>' +
+      (list.length ? P.betList(list, 'user') : empty(all.length ? 'Ставок із таким статусом немає' : 'Ставок поки немає', all.length ? '' : 'Додайте першу ставку вручну або з будь-якого матчу.'));
+  }
+  function favTab() {
+    const teams = D.TOURS.flatMap((t) => t.teams.map((x) => [x.n, D.SPORTS[t.sport].name + ', ' + t.name]));
+    const seen = new Set(); const opts = teams.filter(([n]) => !S.fav.includes(n) && !seen.has(n) && seen.add(n));
+    const up = D.matchesInRange(U.ds(now()), 3).filter((m) => P.isFav(m) && D.status(m) !== 'finished');
+    return P.sec('Обрані команди та гравці', (S.fav.length ? '<div class="favs">' + S.fav.map((n) => '<span class="favc">' + icon('star') + esc(n) + '<button type="button" class="ib sm" data-act="fav" data-team="' + esc(n) + '" aria-label="Прибрати ' + esc(n) + '">' + icon('x') + '</button></span>').join('') + '</div>' : '<p class="muted">Поки порожньо. Додайте команду зі списку нижче або зірочкою на сторінці матчу.</p>') +
+      '<div class="frow"><label class="sel"><select data-ch="fav-add"><option value="">Додати команду чи гравця</option>' + opts.map(([n, g]) => '<option value="' + esc(n) + '">' + esc(n) + ' (' + esc(g) + ')</option>').join('') + '</select></label></div>') +
+      P.sec('Найближчі матчі обраних', up.length ? '<div class="mlist">' + up.map((m) => P.matchRow(m, true)).join('') + '</div>' : '<p class="muted">У найближчі три дні матчів немає.</p>');
+  }
+  onChange('fav-add', (el) => { if (el.value && !S.fav.includes(el.value)) { S.fav.push(el.value); toast(el.value + ' додано в обране', 'ok'); rerender(); } });
+  function statsTab() {
+    const bets = A.inRange(S.bets.user, S.ui.stRange); const st = A.stats(bets, 0);
+    const tbl = (title, rows) => P.sec(title, '<table class="tbl"><thead><tr><th></th><th class="r">Ставок</th><th class="r">Влучність</th><th class="r">ROI</th><th class="r">Прибуток</th></tr></thead><tbody>' + (rows.length ? rows.map((r) => '<tr><td>' + esc(r.key) + (r.n < 10 ? ' <span class="lown">мало даних</span>' : '') + '</td><td class="r">' + r.n + '</td><td class="r">' + pct(r.winRate, 0) + '</td><td class="r ' + plCls(r.roi || 0) + '">' + pct(r.roi) + '</td><td class="r">' + plSpan(r.pl) + '</td></tr>').join('') : '<tr><td colspan="5" class="muted">Немає даних</td></tr>') + '</tbody></table>');
+    const u = A.stats(A.inRange(S.bets.user, S.ui.stRange), 0).series, a = A.stats(A.inRange(S.bets.ai, S.ui.stRange), 0).series;
+    return '<div class="filters">' + chips('ui.stRange', [['7', '7 днів'], ['30', '30 днів'], ['all', 'Увесь час']]) + '</div>' +
+      (st.decided < 30 ? note('Мала вибірка: ' + st.decided + ' ' + plural(st.decided, ['розрахована ставка', 'розраховані ставки', 'розрахованих ставок']) + '. Висновки про «вдалий» вид спорту чи ринок поки робити рано.', 'warn') : '') +
+      '<div class="tiles t4">' + tile('Ставок', String(st.n)) + tile('Влучність', pct(st.winRate, 0)) + tile('ROI', '<span class="' + plCls(st.roi || 0) + '">' + pct(st.roi) + '</span>') + tile('Макс. просадка', money(st.maxDD)) + '</div>' +
+      '<div class="cols">' + tbl('За видами спорту', A.group(bets, (b) => D.SPORTS[b.sport].name)) + tbl('За ринками', A.group(bets, mkOf)) + '</div>' +
+      tbl('За коефіцієнтом', A.group(bets, (b) => A.oddsBand(b.odds))) +
+      P.sec('Ви та AI: прибуток наростаючим підсумком', lineChart({ series: [{ name: 'Ви', values: u.map((p) => p.cum), color: S.profile.color }, { name: 'AI-аналітик', values: a.map((p) => p.cum), color: '#9aa3b2' }], zero: true, fmt: (v) => money(v), title: 'Ви та AI' }) + '<p class="fine">Лінії мають різну кількість ставок, тож їх варто порівнювати як тенденцію, а не точку в точку.</p>');
+  }
+  function settingsTab() {
+    const Pr = M.PROFILES;
+    const row = (t, d, c) => '<div class="set"><div><b>' + t + '</b>' + (d ? '<p>' + d + '</p>' : '') + '</div><div class="set-c">' + c + '</div></div>';
+    return P.sec('Профіль', row('Ім’я', 'Показується на головній і в кабінеті.', '<div class="inl"><input class="inp" id="pf-name" value="' + esc(S.profile.name) + '" maxlength="40" aria-label="Ім’я"><button type="button" class="btn ghost" data-act="pf-name">Зберегти</button></div>') +
+        row('Колір аватара', '', '<div class="swatches">' + COLORS.map((c) => '<button type="button" class="swatch' + (S.profile.color === c ? ' on' : '') + '" style="background:' + c + '" data-act="set" data-k="profile.color" data-v="' + c + '" aria-label="Колір ' + c + '"></button>').join('') + '</div>')) +
+      P.sec('Баланс', row('Мій стартовий баланс', 'Від нього рахуються ваш баланс, ROI і просадка. Зараз: ' + money(A.bankroll('user')) + '.', '<div class="inl"><input class="inp sm" id="bank-user" inputmode="decimal" value="' + S.user.start + '" aria-label="Мій стартовий баланс"><button type="button" class="btn ghost" data-act="bank" data-w="user">Застосувати</button></div>') +
+        row('Стартовий баланс AI', 'Віртуальні гроші. Щоб AI перерахував історію з новою сумою, натисніть «Перебудувати».', '<div class="inl"><input class="inp sm" id="bank-ai" inputmode="decimal" value="' + S.ai.start + '" aria-label="Стартовий баланс AI"><button type="button" class="btn ghost" data-act="bank" data-w="ai">Застосувати</button><button type="button" class="btn ghost" data-act="ai-rebuild">' + icon('refresh') + 'Перебудувати</button></div>') +
+        row('Валюта', 'Лише відображення, без конвертації.', select('settings.currency', [['EUR', 'Євро (€)'], ['UAH', 'Гривня (₴)'], ['USD', 'Долар ($)'], ['PLN', 'Злотий (zł)']]))) +
+      P.sec('Що показувати', row('Види спорту', 'Впливають на можливості, сповіщення і ставки AI.', '<div class="chips">' + Object.values(D.SPORTS).map((s) => { const on = S.settings.sports.includes(s.id); return '<button type="button" class="chip' + (on ? ' on' : '') + '" data-act="sport-t" data-v="' + s.id + '" aria-pressed="' + on + '">' + sportIc(s.id) + s.name + '</button>'; }).join('') + '</div>')) +
+      P.sec('AI-аналітик', '<div class="profiles">' + Object.keys(Pr).map((k) => '<button type="button" class="prof' + (S.settings.risk === k ? ' on' : '') + '" data-act="set" data-k="settings.risk" data-v="' + k + '"><b>' + Pr[k].name + '</b><span>Різниця від ' + Pr[k].minEdge + ' п.п., впевненість від ' + Pr[k].minConf + '</span><span>До ' + Math.round(Pr[k].cap * 100) + '% балансу на ставку, коефіцієнт до ' + num(Pr[k].maxOdds, 1) + '</span></button>').join('') + '</div>' + row('Автоматичний аналіз', 'AI переглядає матчі кожні 30 хвилин демо-часу.', sw('settings.autoAI', 'Увімкнено'))) +
+      P.sec('Сповіщення', row('Важливі новини', 'Високий вплив або ваші обрані команди.', sw('settings.notif.news', 'Новини')) + row('Скоро початок', 'Матчі з вашими ставками та обраними командами.', sw('settings.notif.start', 'Старт')) + row('Ставки AI', '', sw('settings.notif.ai', 'Ставки AI')) + row('Результати ставок', '', sw('settings.notif.settle', 'Результати'))) +
+      P.sec('Демо-час', '<p class="muted">Перемотайте час, щоб матчі почалися, завершилися, а ставки розрахувалися.</p>' + P.clockBtns()) +
+      P.sec('Дані', row('Експорт', 'Усі ставки та налаштування одним файлом JSON.', '<button type="button" class="btn ghost" data-act="export">' + icon('download') + 'Завантажити</button>') + row('Скинути все', 'Видалити профіль, ставки й налаштування з цього браузера.', '<button type="button" class="btn danger" data-act="reset">' + icon('trash') + 'Скинути</button>') +
+        '<p class="fine">Дані зберігаються лише у вашому браузері. Джерела: ' + Object.values(SIT.providers).map((p) => esc(p.name)).join(', ') + '.</p>');
+  }
+  on('pf-name', () => { const v = document.getElementById('pf-name').value.trim(); S.profile.name = v; toast('Ім’я збережено', 'ok'); rerender(); });
+  on('bank', (el) => { const w = el.dataset.w; const v = parseFloat(document.getElementById('bank-' + w).value.replace(',', '.')); if (!(v >= 10) || v > 1e7) { toast('Вкажіть суму від 10'); return; } S[w].start = Math.round(v); toast('Стартовий баланс оновлено', 'ok'); rerender(); });
+  on('ai-rebuild', () => { A.rebuildAI(); });
+  on('sport-t', (el) => { const a = S.settings.sports; const i = a.indexOf(el.dataset.v); if (i >= 0) { if (a.length === 1) { toast('Потрібен хоча б один вид спорту'); return; } a.splice(i, 1); } else a.push(el.dataset.v); rerender(); });
+  on('export', () => { const blob = new Blob([JSON.stringify(Object.assign({ exported: new Date().toISOString() }, S), null, 2)], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'sit-' + U.ds(Date.now()) + '.json'; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 400); });
+  on('reset', () => openModal('Скинути все?', '<p>Профіль, ставки, обране й налаштування буде видалено з цього браузера. Застосунок почнеться з початку.</p>', '<button type="button" class="btn ghost" data-act="close">Скасувати</button><button type="button" class="btn danger" data-act="reset-ok">Скинути</button>'));
+  on('reset-ok', () => { try { localStorage.removeItem(A.KEY); } catch (e) { /* */ } location.hash = '#/'; location.reload(); });
+
+  V.me = function (params) {
+    const tab = params[0] || S.ui.meTab || 'overview'; S.ui.meTab = tab;
+    const st = A.stats(S.bets.user, S.user.start);
+    const tabs = [['overview', 'Огляд'], ['bets', 'Мої ставки'], ['fav', 'Обране'], ['stats', 'Статистика'], ['settings', 'Налаштування']];
+    const body = tab === 'bets' ? betsTab() : tab === 'fav' ? favTab() : tab === 'stats' ? statsTab() : tab === 'settings' ? settingsTab() : overview();
+    return '<section class="profile"><span class="ava big" style="background:' + esc(S.profile.color) + '">' + esc(initials(S.profile.name)) + '</span>' +
+      '<div class="pf"><h1>' + esc(S.profile.name || 'Гість') + '</h1><p>Особистий кабінет. У SIT з ' + new Date(S.profile.since).toLocaleDateString('uk-UA', { day: 'numeric', month: 'long', year: 'numeric' }) + '. Ставки паперові, баланс віртуальний.</p></div>' +
+      '<div class="pf-bal"><span>Баланс</span><b>' + money(st.bank) + '</b><span class="' + plCls(st.pl) + '">' + money(st.pl, true) + ' від старту</span></div>' +
+      '<button type="button" class="btn primary" data-act="bet-add">' + icon('plus') + 'Додати ставку</button></section>' +
+      '<nav class="tabs" role="tablist">' + tabs.map(([k, t]) => '<a role="tab" aria-selected="' + (k === tab) + '" class="' + (k === tab ? 'on' : '') + '" href="#/me/' + k + '">' + t + (k === 'bets' && st.pending ? '<em>' + st.pending + '</em>' : '') + '</a>').join('') + '</nav>' + body;
+  };
+
+  /* ---------- знайомство ---------- */
+  V._onboarding = function () {
+    openModal('Ласкаво просимо до SIT', '<div class="form onb"><p>SIT допомагає аналізувати футбол, теніс і кіберспорт: показує форму, новини, коефіцієнти та оцінку моделі, а також веде ваш журнал ставок. Усе тут демонстраційне: матчі згенеровані, ставки паперові, гроші віртуальні.</p>' +
+      '<label class="fld"><span>Як до вас звертатися?</span><input class="inp" id="ob-name" maxlength="40" placeholder="Ваше ім’я"></label>' +
+      '<div class="f2"><label class="fld"><span>Стартовий баланс</span><input class="inp" id="ob-bank" inputmode="decimal" value="1000"></label><label class="fld"><span>Валюта</span><select class="inp" id="ob-cur"><option value="EUR">Євро (€)</option><option value="UAH">Гривня (₴)</option><option value="USD">Долар ($)</option><option value="PLN">Злотий (zł)</option></select></label></div>' +
+      '<label class="check"><input type="checkbox" id="ob-ex" checked><span>Додати кілька прикладів ставок, щоб одразу побачити, як працює кабінет</span></label></div>',
+      '<button type="button" class="btn primary" data-act="ob-go">Почати</button>');
+  };
+  on('ob-go', () => {
+    const name = document.getElementById('ob-name').value.trim(); const bank = parseFloat(document.getElementById('ob-bank').value.replace(',', '.'));
+    S.profile.name = name; S.user.start = bank >= 10 ? Math.round(bank) : 1000; S.settings.currency = document.getElementById('ob-cur').value;
+    const ex = document.getElementById('ob-ex').checked; closeModal(true); A.finishOnboarding(ex);
   });
 
-  SIT.Views = V;
-  SIT.ViewHelpers = { panel, table, oppCard, matchRow, newsCard, radar, betList, betModal, openBetForm };
   A.start();
 })();

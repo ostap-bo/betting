@@ -1,24 +1,25 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="uk">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#0d1219">
-  <meta name="description" content="Sports Intelligence Terminal: personal sports analytics MVP with an AI paper-trading account. Demo data only.">
-  <title>SIT - Sports Intelligence Terminal</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230d1219'/%3E%3Crect x='7' y='16' width='4' height='9' fill='%23f2b33d' opacity='.6'/%3E%3Crect x='14' y='6' width='4' height='19' fill='%23f2b33d'/%3E%3Crect x='21' y='11' width='4' height='14' fill='%23f2b33d' opacity='.8'/%3E%3C/svg%3E">
+  <meta name="theme-color" content="#ffffff">
+  <meta name="description" content="SIT: персональна спортивна аналітика. Футбол, теніс, кіберспорт. Демо-версія.">
+  <title>SIT, спортивна аналітика</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232357e8'/%3E%3Crect x='7' y='17' width='4' height='8' rx='1' fill='%23fff' opacity='.6'/%3E%3Crect x='14' y='12' width='4' height='13' rx='1' fill='%23fff' opacity='.8'/%3E%3Crect x='21' y='7' width='4' height='18' rx='1' fill='%23fff'/%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,300..900&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <div id="app"><div class="boot"><div class="boot-t">Sports Intelligence Terminal</div><div class="boot-b">Loading. JavaScript is required.</div></div></div>
-  <div id="overlay-root"></div>
-  <noscript><p style="padding:16px">This app needs JavaScript enabled.</p></noscript>
-  <!-- Order matters: data layer, engine, app core, views (views.js calls SIT.App.start()) -->
+  <noscript>Для роботи SIT потрібен увімкнений JavaScript.</noscript>
+  <div id="app"></div>
+  <div id="np" role="dialog" aria-label="Сповіщення"></div>
+  <div id="overlay"></div>
+  <!-- Порядок важливий: дані, модель, ядро, сторінки -->
   <script src="data.js"></script>
-  <script src="engine.js"></script>
+  <script src="model.js"></script>
   <script src="app.js"></script>
   <script src="views.js"></script>
 </body>
